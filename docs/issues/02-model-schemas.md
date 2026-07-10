@@ -21,7 +21,7 @@ pure library code with exhaustive tests and zero I/O.
 - `src/util/errors.ts` — shared error taxonomy: `UsageError`, `AnalysisError`, `SecretGateError`, each carrying a stable kebab-case `code` (exit-code mapping is wired later in issue 04; issue 03 already throws these).
 - `src/util/stable-json.ts` — `stableStringify(value): string`.
 - `src/util/order.ts` — `byteOrderCompare(a, b)`: the repo-wide "byte order" comparator (UTF-8 byte sequence comparison, §5.6 rule 2); `stableStringify` key sorting and every producer's array sort use it.
-- `src/util/hash.ts` — `sha256Hex(input: string | Uint8Array)`, `short12`, `short8`, `excerptId(path, startLine, endLine, text)`, `entryId(file, symbol)`, `stepId(tourId, index, title)`, `secretFindingId(path, line, ruleId)`.
+- `src/util/hash.ts` — `sha256Hex(input: string | Uint8Array)`, `short12`, `short8`, `excerptId(path, startLine, endLine, text)`, `entryId(file, symbol)`, `stepId(tourId, index, title)`, `secretFindingId(path, line: number | null, ruleId)` (a null line hashes as the literal `"-"` so narration-body findings get stable ids).
 - `src/util/paths.ts` — `toRepoRelPosix(root, abs)` (POSIX separators, NFC normalize), `safeJoin(root, rel)` (resolve + prefix containment assert, rejects `..` escapes and absolute `rel`), `stripControlChars(s)` (§11.3: remove C0 except `\t\n\r`, and DEL).
 - Unit tests for all of the above.
 

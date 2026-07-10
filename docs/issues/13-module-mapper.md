@@ -16,7 +16,7 @@ folding matters more than cleverness.
 
 ## Scope
 
-- `src/analyze/modules/index.ts` — `mapModules({ files, manifest, edges, entryPoints, symbols }, logger) → { modules: ModuleInfo[], warnings }`.
+- `src/analyze/modules/index.ts` — `mapModules({ files, manifest, edges, entryPoints, symbols }, logger) → { modules: ModuleInfo[], moduleEdges: { from, to, weight }[], warnings }` (moduleEdges = file edges aggregated to module ids, weight = file-edge count, deduped, sorted (from, to) — the §7.2 dep-graph input; `ModuleInfo.files` carries assigned paths in-memory and is stripped from the bundle, §5.4).
 - `src/analyze/modules/roles.ts` — role table + classifier.
 - Unit tests on fixtures.
 
@@ -54,7 +54,7 @@ folding matters more than cleverness.
 ## Acceptance Criteria
 
 - [ ] mini-express-app modules include `src/routes` (role http-api), `src/services` (role domain), `src/db` (role data-access), `src/util` (role shared-utils), `test` (role tests); `src/server.ts` lands in a module classified `entry` or the `"."`/`src` module contains the entry (assert actual folding result and freeze it).
-- [ ] fanIn/fanOut: `src/db` has fanIn ≥ 1 (from services) and fanOut 0 among project modules.
+- [ ] fanIn/fanOut: `src/db` has fanIn ≥ 1 (from services) and fanOut 0 among project modules; `moduleEdges` contains (services → db) with the expected weight; every `ModuleInfo.files` list partitions exactly.
 - [ ] topSymbols for `src/services` includes the userService exports, ≤ 5 names.
 - [ ] Partition invariant: sum of module fileCounts = total analyzed files; no file in two modules (property test over all fixtures).
 - [ ] plain-docs: `docs/` has 2 assigned files (< 3) so it merges up — the deterministic result is exactly one module `"."` with fileCount 4, role `unknown`; assert precisely this (comment cites the §6.5 fold rule).

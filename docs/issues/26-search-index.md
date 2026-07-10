@@ -18,35 +18,44 @@ one module owns tokenizer + scoring symmetry.
 
 ## Scope
 
-- `src/searchindex/tokenize.ts` — normative tokenizer (§10.4): lowercase → split on non-alphanumerics → camelCase split (`fooBar` → `foo`,`bar`; also split on digit/letter boundaries) → drop tokens len < 2.
-- `src/searchindex/build.ts` — `buildSearchIndex({ tours, symbols, modules, excerpts, files }) → Bm25Index` (§10.4 stored shape: `{ vocab, docs, postings }`).
+- `src/searchindex/tokenize.ts` — normative tokenizer (§10.4), in this exact order: insert boundaries on the **original** string (camelCase `fooBar→foo|Bar`, acronym runs `HTTPServer→HTTP|Server`, letter/digit boundaries) → lowercase → split on non-alphanumerics → drop tokens len < 2.
+- `src/searchindex/build.ts` — `buildSearchIndex({ tours, symbols, modules, excerpts }) → { index: Bm25Index, warnings }` (§10.4 stored shape: `{ vocab, docs: [{id, type, len}], postings }`; `type ∈ "step"|"symbol"|"module"|"excerpt"` — **no file-path docs in v1**: paths already occur inside symbol/step text, and contextRefs have no file type). Input shapes come from issue 02's schemas (`Tour`, `SymbolRef`, `ModuleInfo`, `CodeExcerpt`).
 - `src/searchindex/query.ts` — `queryIndex(index, question, { boostDocIds?, topK }) → { docId, score, type }[]` (BM25 k1=1.2, b=0.75; context boost ×1.3; ties → docId lexicographic).
 - Unit tests incl. a known-corpus ranking snapshot.
 
 ## Detailed Requirements
 
 1. Document construction with field boosts (§10.4): steps (title tokens ×3, body ×1.5),
-   symbols (name ×3, signature ×1), modules (name/path ×2, role ×1), excerpts (first
-   2000 chars ×1), file paths (path segments ×2). Boost = token frequency multiplier at
-   build time (document as integer-weighted tf; k1/b applied at query).
-2. Doc ids: `step:<stepId>`, `sym:<file>#<name>`, `mod:<moduleId>`, `x:<excerptId>`,
-   `file:<path>` — stable, sorted in `docs` array by id.
-3. Stored shape must round-trip through zod (`Bm25IndexSchema` — add to model with this
-   issue, coordinate §5.4) and stableStringify; postings keys sorted; document lengths
-   stored as integers.
+   symbols (name ×3, signature ×1), modules (name ×2 with name = basename of path and
+   `root` for `"."`, role ×1), excerpts (first 2000 chars ×1). Boost = fractional term
+   frequency multiplier at build time; `tf` and `len` are stored as JSON numbers
+   (floats allowed — deterministic since inputs and arithmetic order are fixed).
+2. Doc ids: `step:<stepId>`, `sym:<file>#<name>`, `mod:<moduleId>`, `x:<excerptId>` —
+   stable, `docs` sorted by id (byteOrderCompare), each doc storing its `type`.
+3. Stored shape must round-trip through zod (`Bm25IndexSchema` — finalizes the issue-02
+   placeholder) and stableStringify; postings keys sorted; posting lists sorted by
+   docIdx.
 4. Query scoring: standard BM25 (`idf = ln(1 + (N − df + 0.5)/(df + 0.5))`), document
-   length normalization with `avgdl` from the index; `boostDocIds` multiplies final score
-   ×1.3 (chat's current-tour/step context, §10.4); return topK (default 8) with
+   length normalization with `avgdl` from the index; `boostDocIds` multiplies final
+   score ×1.3 (chat's current-tour/step context, §10.4); return topK (default 8) with
    deterministic tie order.
-5. Size guard: skip excerpt docs beyond 500 excerpts (largest bundles), warning
-   `search-excerpts-capped` — steps/symbols/modules/files are never capped.
-6. No stemming, no stopwords in v1 (documented — determinism and simplicity over recall).
+5. Size guard (§13): when excerpts exceed 500, index the first 500 by excerptId asc,
+   warning `search-excerpts-capped` (steps/symbols/modules are never capped).
+6. No stemming, no stopwords in v1 (documented — determinism and simplicity over
+   recall).
+7. Secret-gate interaction (documented, not implemented here): every indexed source
+   string (step bodies/titles, signatures, excerpt texts) is part of the §11.4 emit
+   corpus, so the vocab cannot contain a secret that the gate did not already see —
+   issue 36 adds a hostile-fixture regression asserting the fake token is absent from
+   the serialized index.
 
 ## Acceptance Criteria
 
-- [ ] Tokenizer table tests with frozen expected outputs: `getUserById` → `get,user,by,id`; `HTTPServer` → `http,server` (acronym boundary = uppercase-run followed by lowercase splits before the last capital); `HTTPServer2` → `http,server` (digit split; `2` dropped at len < 2); `v2` → dropped entirely; `snake_case_name` → `snake,case,name`.
+- [ ] Tokenizer table tests with frozen expected outputs (boundaries before lowercasing): `getUserById` → `get,user,by,id`; `HTTPServer` → `http,server` (acronym boundary = uppercase-run followed by lowercase splits before the last capital); `HTTPServer2` → `http,server` (digit split; `2` dropped at len < 2); `v2` → dropped entirely; `snake_case_name` → `snake,case,name`.
 - [ ] Known-corpus test: 12 hand-written docs, 5 queries with expected top-3 ids each (snapshot with rationale comments).
+- [ ] Structure test: a 3-doc tiny corpus serializes to an exact expected JSON (freezes vocab df values, doc types/lens, sorted postings).
 - [ ] mini-express-app end-to-end: query "how are users created" ranks the userService symbol or the flow hop step in top-3 (assert membership, not exact order).
+- [ ] Cap test: 501 synthetic excerpts → 500 indexed (ids frozen by order), `search-excerpts-capped` warning, no capped doc in postings.
 - [ ] Round-trip: build → stableStringify → parse → identical query results.
 - [ ] Boost test: same corpus, `boostDocIds` flips a near-tie (constructed case).
 
@@ -57,7 +66,8 @@ equality (byte-identical serialized index).
 
 ## Dependencies
 
-17 (tours/excerpts shapes; runs on builder outputs).
+02 (schemas: Tour/SymbolRef/ModuleInfo/CodeExcerpt + Bm25Index placeholder), 17
+(tours/excerpts produced by builders; runs on their outputs).
 
 ## Non-goals
 

@@ -34,7 +34,7 @@ source of truth for scope, ordering, and dependencies.
 | 12 | `issues/12-entrypoint-detector.md` | Entry-point detector with evidence scoring | 1 | 07, 10, 11 | §6.9 |
 | 13 | `issues/13-module-mapper.md` | Module mapper: folding, roles, metrics | 1 | 06, 07, 10, 11, 12 | §6.5 |
 | 14 | `issues/14-callpath-resolution.md` | Call-path tracer (1/2): call resolution engine | 1 | 10, 12 | §6.10 |
-| 15 | `issues/15-callpath-selection.md` | Call-path tracer (2/2): significance scoring and path selection | 1 | 14 | §6.10 |
+| 15 | `issues/15-callpath-selection.md` | Call-path tracer (2/2): significance scoring and path selection | 1 | 13, 14 | §6.10 |
 | 16 | `issues/16-pipeline-orchestrator.md` | Analysis pipeline orchestrator, warnings, degradation matrix | 1 | 06–15 | §6.1, §12, §13 |
 | 17 | `issues/17-tour-framework.md` | Tour builder framework and shared excerpt service | 2 | 16 | §7.1 |
 | 18 | `issues/18-architecture-tour.md` | Architecture tour builder with treemap/dep-graph layouts | 2 | 17 | §7.2, §5.5 |
@@ -42,10 +42,10 @@ source of truth for scope, ordering, and dependencies.
 | 20 | `issues/20-hotspots-tour.md` | Hotspots tour builder | 2 | 08, 17 | §7.4 |
 | 21 | `issues/21-contributing-tour.md` | Contributing tour builder | 2 | 07, 17 | §7.5 |
 | 22 | `issues/22-template-narration.md` | Template narration engine with en/ja string tables | 2 | 17 | §7.6, §8.1 |
-| 23 | `issues/23-secret-gate.md` | Secret scanner and fail-closed emit gate | 2 | 02 | §11.4, §6.2(3) |
+| 23 | `issues/23-secret-gate.md` | Secret scanner and fail-closed emit gate | 2 | 02, 03 | §11.4, §6.2(3) |
 | 24 | `issues/24-llm-adapters.md` | LLM provider adapters (fetch/SSE) + test mock | 2 | 03 | §10.5, §11.7 |
 | 25 | `issues/25-llm-narration.md` | LLM narration enhancer: budgets, cache, fallback, token report | 2 | 22, 23, 24 | §8.2–8.5 |
-| 26 | `issues/26-search-index.md` | BM25 search index builder (generate side) | 3 | 17 | §10.4, §5.4 |
+| 26 | `issues/26-search-index.md` | BM25 search index builder (generate side) | 3 | 02, 17 | §10.4, §5.4 |
 | 27 | `issues/27-site-emitter.md` | Site emitter: bundle serialization, highlighting, CSP, inline data | 3 | 18–23, 26 | §9.1, §4.5, §5.6 |
 | 28 | `issues/28-viewer-shell.md` | Viewer shell: boot, router, state, tour navigation chrome | 3 | 01 | §9.2–9.3 |
 | 29 | `issues/29-viewer-step-code.md` | Viewer step view and code pane | 3 | 28 | §9.3, §11.5 |
@@ -73,7 +73,7 @@ flowchart TD
     I09 --> I10[10 symbols]; I09 --> I11[11 imports]
     I07 --> I12[12 entries]; I10 --> I12; I11 --> I12
     I06 --> I13[13 modules]; I07 --> I13; I10 --> I13; I11 --> I13; I12 --> I13
-    I10 --> I14[14 flow-resolve]; I12 --> I14; I14 --> I15[15 flow-select]
+    I10 --> I14[14 flow-resolve]; I12 --> I14; I14 --> I15[15 flow-select]; I13 --> I15
     I13 --> I16[16 pipeline]; I15 --> I16; I08 --> I16
     I16 --> I17[17 tour-framework]
     I17 --> I18[18 architecture]; I17 --> I19[19 entry-flow]; I15 --> I19
@@ -214,3 +214,6 @@ GitHub Action; tour markdown/PDF export. Rationale: DESIGN §15.2.
   one module/surface, exact file paths, no cross-issue guessing. When an implementer
   discovers a contradiction with DESIGN.md, the fix is: update DESIGN.md first (PR), then
   the issue.
+- `onboard-cli-placeholder` in Validation commands refers to the `packages/onboard`
+  package name until issue 40 finalizes it (KU-1); substitute the current name when
+  running commands.

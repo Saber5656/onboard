@@ -24,39 +24,58 @@ emission (17–27) consume its output.
 
 ## Detailed Requirements
 
-1. Stage order and data flow exactly as DESIGN §2.1/§2.2: fsscan → (manifest ∥ git ∥
-   ts-loader) → (symbols ∥ imports) → entries → modules → flow-resolve/select. `--no-git`
-   skips the git stage entirely (availability reason "requires git history",
-   distinguishable code `no-git-flag` vs `git-unavailable`). The pipeline (which has
-   both manifest and ts outputs) emits warning `ts-workspace-shallow` when
-   `manifest.workspaces` is non-empty and TS analysis loaded from a root tsconfig
-   (moved here from issue 09 — the loader has no manifest access).
+1. Stage order — **strictly serial, fixed** (determinism first; the §2.1 diagram shows
+   data dependencies, not concurrency): `fsscan → manifest → git → ts → symbols →
+   imports → entries → modules → callpaths` (call *resolution* is internal to the
+   callpaths stage via issue 15; there is no separate resolve stage). `--no-git` skips
+   the git stage (availability reasonCode `no-git-flag` vs `git-unavailable`). The
+   pipeline emits warning `ts-workspace-shallow` when `manifest.workspaces` is
+   non-empty and TS analysis loaded from a root tsconfig (it alone has both inputs).
 2. Stage contract enforcement: each stage runs inside a wrapper that (a) times it,
-   (b) catches non-`StageFatal` throws and converts them to warning
-   `pipeline-stage-error` + documented degraded output (the §6.1 matrix row), (c) merges
-   stage warnings into the model. `StageFatal` (e.g. fsscan root unreadable) aborts →
-   `AnalysisError` (exit 3).
-3. Degradation matrix implemented as one pure function
-   `computeAvailability(model, config) → TourAvailability[]` with the §6.1 table:
-   hotspots unavailable without git; entry-flow unavailable without ts or without any
-   flow-eligible CallPath; contributing always available; architecture always available;
-   < 5 analyzable files → warning `pipeline-tiny-repo` and only architecture guaranteed.
-   `--tours` subset filters availability output (unselected → not emitted at all).
-4. `RepoModel.warnings` = ordered stage warnings (stage, code, message, path?).
-   Timings recorded per stage (integer ms) — timings go **only** into run-report (§12),
-   never into the bundle (determinism).
-5. Memory guard: after ts stages, call `project.forgetNodesCreatedInBlock`-style cleanup
-   where ts-morph allows; document that the Project is released before emit stages.
-6. `--json` run: stdout report includes timings, counts (files, symbols, edges,
-   entryPoints, callPaths), warnings, availability.
+   (b) catches throws, (c) merges stage warnings. Fatality rule: a throw from
+   **fsscan** (e.g. `AnalysisError("fsscan-root-unreadable")`) aborts the run (exit 3).
+   A throw from any other stage is converted to warning `pipeline-stage-error` plus the
+   degraded output from this **fallback table** (normative):
+   | stage | fallback |
+   |---|---|
+   | manifest | `manifest: null`, `readme: null`, `ciWorkflows: []` |
+   | git | `git: null` |
+   | ts | `ts: null` |
+   | symbols / imports / entries / callpaths | empty arrays / empty edge sets |
+   | modules | synthetic single module `"."` (role `unknown`, all files assigned) so the architecture tour can always build |
+3. Warning sanitization at the wrapper: every warning message passes
+   `stripControlChars`, absolute paths under root are relativized, and the logger's
+   env-key redaction snapshot is applied — no stacks, no absolute paths, no env values
+   in `PipelineWarning` (§11.2 T5/T8, §11.3).
+4. Availability: `computeAvailability(model, config) → { availability: TourAvailability[],
+   warnings: PipelineWarning[] }` — pure — implementing the §6.1 matrix with the §5.3
+   shape `{ kind, available, reason, reasonCode }`: hotspots without git
+   (`no-git-flag`/`git-unavailable`); entry-flow without ts (`no-ts`) or with zero
+   surviving CallPaths (`no-traceable-entries`); architecture/contributing always
+   available at this stage (builders may still return unavailable, merged later by 17);
+   < 5 analyzable files → warning `pipeline-tiny-repo` (architecture is the only
+   *guaranteed* tour; others keep their own rules). `--tours` subset filters
+   availability output (unselected → not emitted at all).
+5. `RepoModel.warnings` = ordered stage warnings (stage, code, message, path?).
+   Timings recorded per stage (integer ms), keys exactly the stage names of rule 1 —
+   timings go **only** into run-report (§12), never into the bundle (determinism).
+6. ts-morph lifecycle: the `Project` lives only from the ts stage through the callpaths
+   stage; after callpaths, the pipeline drops every reference (serialized
+   `RepoModel.ts` carries only `{ sourceFileCount, tsconfigPath }`); a test asserts the
+   returned model stableStringify-serializes without error (proves no live compiler
+   objects escape).
+7. `--json` run: stdout report matches the §12 run-report shape exactly (counts incl.
+   entryPoints/callPaths/steps-so-far, availability, warnings, stageTimingsMs).
 
 ## Acceptance Criteria
 
 - [ ] mini-express-app: all four tours available; counts non-zero; `runGenerate` exits 3 with `not-implemented` **after** printing pipeline summary (until 27) — assert stderr order.
-- [ ] plain-docs: availability = architecture + contributing available; entry-flow reason "requires TS/JS analysis in v1"; hotspots available (fixture has git history via helper).
-- [ ] `--no-git` on mini-express-app: hotspots unavailable with reason code `no-git-flag`; git stage timing absent.
-- [ ] Fault injection: a stage stubbed to throw (test seam) degrades per matrix and the run still completes with `pipeline-stage-error` warning; a `StageFatal` from fsscan aborts with exit 3.
-- [ ] Double-run: identical serialized RepoModel (excluding in-memory ts field) and identical availability on every fixture.
+- [ ] plain-docs (4 files, git history from helper): warning `pipeline-tiny-repo` present; availability = architecture + contributing + hotspots available, entry-flow unavailable with `reasonCode: "no-ts"` (asserts the §6.1 "guaranteed vs own-rules" semantics).
+- [ ] `--no-git` on mini-express-app: hotspots unavailable with `reasonCode: "no-git-flag"`; `stageTimingsMs` has no `git` key; the key set equals the executed stage names exactly.
+- [ ] Fault injection (test seam stubs): manifest stage throw → run completes, `manifest: null`, `pipeline-stage-error` warning; modules stage throw → synthetic `"."` module; fsscan throw → exit 3.
+- [ ] Warning sanitization: a stage throw whose message contains an absolute path and a planted env key value surfaces relativized and redacted in the run-report.
+- [ ] `--json`: stdout parses as the §12 shape (single JSON document; availability + counts fields present); nothing else on stdout.
+- [ ] Double-run: identical serialized RepoModel (ts field = derived data only, proven serializable) and identical availability on every fixture.
 
 ## Validation
 

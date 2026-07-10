@@ -23,44 +23,48 @@ also owns the two precomputed widget layouts (§5.5) that viewer issues 30/31 re
 
 ## Detailed Requirements
 
-1. Step sequence exactly §7.2 (welcome; repo map; N module steps; dependencies; where
-   next). Narration via StringTable keys (`arch.welcome`, `arch.map`, `arch.module`,
-   `arch.deps`, `arch.next` — coordinate exact key set with issue 22; framework stub
-   table until 22 lands).
-2. Welcome facts: repoName, README title/firstParagraph (when present), stats (file
-   count, loc, top-3 languages), list of available tours.
+1. Step sequence exactly §7.2 — welcome; repo map; N module steps; dependencies (**only
+   when `model.moduleEdges` is non-empty** — §7.2 rule; docs-only repos omit it); where
+   next. Narration via StringTable keys (`arch.welcome`, `arch.map`, `arch.module`,
+   `arch.deps`, `arch.next` — key set fixed by 17/22).
+2. Welcome facts: repoName, `model.readme` title/firstParagraph (when present), stats
+   (file count, loc, top-3 languages), list of available tours.
 3. Module ranking (§7.2 item 3): `0.3·norm(fileCount) + 0.3·norm(loc) + 0.4·norm(fanIn)`
    where `norm(x) = x / max(x over candidate modules)` (max 0 ⇒ term 0); candidates
    exclude roles {tests, docs, build}; take top `min(8, candidates)`; tie-break module
    path asc. Excluded-role modules are mentioned in aggregate in the map step narration
    facts (counts only).
 4. Module step: role, metrics (fileCount, loc, fanIn/fanOut), topSymbols, representative
-   excerpt = declaration of the module's first topSymbol (fall back: file-head excerpt of
-   the module's highest-fanIn file; no readable file → no excerpt, narration-only step).
-   Anchor set to the excerpt span.
-5. Treemap (strip algorithm, §7.2 item 2): input = ranked modules (all roles, not just
-   top-8) sorted by loc desc; rows of ≤ 4 items; coordinate space 0..1000×1000; row
-   height = round(1000 · rowLoc / totalLoc) (last row absorbs rounding remainder);
-   within a row, widths ∝ loc with the same remainder rule. Output rects must tile the
-   space exactly (property test: no overlap, full coverage within rounding of ±1 per
-   edge, all integers).
-6. Dep-graph layout (§7.2 item 4): nodes = top-8 modules + any module with an edge to/from
-   them; edges = module-level import edges with weight = file-edge count. Layering:
-   topological depth over the module DAG; cycles broken by removing the lowest-weight
-   edge in each cycle (deterministic: iterate edges sorted by (weight asc, from, to)),
-   removed edges noted in the deps-step facts. Coordinates: `x = depth·220`,
-   `y = slot·90`, slot = index within layer sorted by module id.
-7. Dependencies step narration facts: the 3 heaviest edges (weight desc, tie (from,to))
-   with human labels.
-8. Where-next step: lists other tours from availability with their reasons when
-   unavailable.
+   excerpt — lookup: the module's first `topSymbols` name resolved against
+   `model.symbols` filtered to `module.files`, first match by (file, startLine);
+   fallback: file-head excerpt of the module's highest-fanIn file (per-file fanIn =
+   incoming count in `model.imports.edges`, tie path asc, only `lang !== null` files);
+   no readable file → no excerpt, narration-only step. Anchor = the returned excerpt
+   span (17's `takeExcerpt` return).
+5. Treemap (strip algorithm, §7.2 item 2): input = **all** `model.modules` sorted by
+   loc desc, tie path asc; when every module has loc 0, weight each module as 1
+   (equal-area tiles). Rows of ≤ 4 items; coordinate space 0..1000×1000; integer
+   coordinates with exact tiling: within a row the **last item absorbs the width
+   remainder**, and the **last row absorbs the height remainder** — union is exactly
+   1000×1000, no overlaps, no tolerance.
+6. Dep-graph layout (§7.2 item 4): nodes = top-8 modules + any module with a
+   `model.moduleEdges` edge to/from them; edges from `model.moduleEdges` (weight =
+   file-edge count, produced by 13). Cycle handling (deterministic, §7.2): iterate
+   edges sorted by (weight desc, from asc, to asc), keep an edge only if it does not
+   create a cycle in the kept-edge DAG (DFS/union-find check); skipped edges are
+   recorded in the deps-step facts. Layering: topological depth over the kept DAG;
+   `x = depth·220`, `y = slot·90`, slot = index within layer sorted by module id.
+7. Dependencies step narration facts: the 3 heaviest edges (weight desc, tie
+   (from, to) asc) with human labels, plus skipped-cycle-edge notes when any.
+8. Where-next step: lists other tours from availability — available ones by title,
+   unavailable ones with their `reason`.
 
 ## Acceptance Criteria
 
-- [ ] mini-express-app: tour has 5 + N steps in the §7.2 order; module steps include `src/routes`, `src/services`, `src/db` (freeze exact set); each module step has anchor + excerptId (except narration-only fallbacks).
-- [ ] Treemap property test (random module sets, 100 cases): integer rects, pairwise non-overlapping, union area = 1000×1000 ± rounding tolerance ≤ 4·rows.
-- [ ] Dep-graph: mini-express-app layout places `src/server`-containing module at depth 0 and `src/db` at max depth (assert relative depths, not absolute pixels); cycle fixture (a↔b snippet project) breaks deterministically (same removed edge both runs).
-- [ ] plain-docs: tour still builds with welcome + map + ≥ 1 module step + next (no dep edges → dependencies step omitted; assert the §7.2 sequence contract explicitly documents the omission rule: dependencies step only when ≥ 1 module edge exists).
+- [ ] mini-express-app: tour has the §7.2 step order; module steps include `src/routes`, `src/services`, `src/db` (freeze exact set); each module step has anchor + excerptId (except narration-only fallbacks); the deps-step facts list the 3 heaviest edges in (weight desc, from, to) order with human labels.
+- [ ] Treemap property test (random module sets incl. an all-zero-loc set, 100 cases): integer rects, pairwise non-overlapping, union area exactly 1,000,000, bounding box exactly 1000×1000.
+- [ ] Dep-graph: mini-express-app layout places the `src/server`-containing module at depth 0 and `src/db` at max depth (relative depths); cycle fixture (a↔b snippet project) keeps/skips the same edge on both runs, and the skipped edge appears in the deps facts.
+- [ ] plain-docs: tour builds with welcome + map + ≥ 1 module step + where-next; the dependencies step is absent (moduleEdges empty); where-next facts include the unavailable entry-flow tour with its reason.
 - [ ] Double-run determinism on serialized tour.
 
 ## Validation

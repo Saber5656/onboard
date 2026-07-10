@@ -23,37 +23,39 @@ skips (KU-5).
 
 ## Detailed Requirements
 
-1. One tour per entry in `callPaths` order (entries sorted by score desc from 12; tour id
-   `entry-flow:<entryId>`; §5.6 ordering rule: entry-flow tours sorted by entryId in the
-   final bundle — assembly order concern for 17/27, but this builder must emit
-   deterministic per-entry output).
+1. Builder contract (the one multi-tour kind, 17):
+   `buildEntryFlowTours(model, config, strings) → { tours: Tour[], unavailable:
+   TourUnavailable | null }` — one tour per surviving CallPath, tour id
+   `entry-flow:<entryId>`, output sorted by entryId (§5.6). `unavailable` is set
+   (reasonCode `no-traceable-entries`) only when zero tours result **and** the pipeline
+   had not already marked the kind unavailable.
 2. Step 0 (overview): facts = entry kind, evidence strings (verbatim from 12), file-head
    excerpt of the entry file (`fileHead: true`), symbol name when present.
 3. Hop steps (1..H): title from StringTable key `flow.hop` with facts
-   `{ callerName, calleeName }` (rendered like `createUser → repo.insert` — exact
-   formatting lives in the string table, not the builder); excerpt = call-site span with
-   `context: true`; a second excerpt of the callee declaration head
-   (min(10 lines, declaration length)) is attached via the step body facts —
-   **model note**: TourStep has a single `excerptId`; the callee-head excerpt is
-   referenced from the body markdown as an internal link to the *next* step's anchor
-   instead of a second excerpt (keeps the schema of §5.3 unchanged). The hop step's
-   `excerptId` = call-site excerpt; its `anchor` = callee declaration span (where the
-   step "lands"). Follow this split exactly.
-4. Branch notes: rendered into the body facts as a list (`also branches to: a (users.ts), b (health.ts)`); empty list → omitted from facts.
+   `{ callerName, calleeName }`. The hop step's `excerptId` = the call-site excerpt
+   (span with `context: true`); its `anchor` = the callee declaration span (where the
+   step "lands"). The callee's declaration head is conveyed through **typed body
+   facts** — `{ calleeSignature, calleeFile, calleeStartLine }` — rendered by the
+   template as inline code + text (no second excerpt, no links to anchors, no raw
+   multi-line code in the body; the signature string is already sanitized by 10/14 and
+   is covered by the §11.4 narration-body gate).
+4. Branch notes: body facts list (`branchNotes: string[]` from the CallPath hop,
+   rendered via the `common.branchNotes` fragment); empty list → omitted from facts.
 5. Recap step: breadcrumb `entry → hop1 … → hopH` (names only), `truncated` note when
-   set (StringTable key `flow.truncated`), pointer to architecture tour.
-6. Entries with `flowEligible: false` or missing/short CallPath: no tour; the pipeline
-   availability (16) already reports entry-flow unavailable only when **zero** tours
-   result; partial cases (some entries usable) proceed with warnings `flow-entry-skipped`.
+   set (StringTable key `flow.truncated`), pointer to the architecture tour.
+6. Entries with `flowEligible: false` or a dropped CallPath simply produce no tour —
+   the skip warnings already exist upstream (12 `entries-dropped`, 15
+   `flow-too-shallow`); this builder emits **no new warning codes**.
 7. Estimated minutes from framework; steps = 2 + H.
 
 ## Acceptance Criteria
 
-- [ ] mini-express-app: tour exists for `src/server.ts` entry; hop steps' anchors land on `routes/users.ts`, `services/userService.ts`, `db/repo.ts` declarations in order (freeze); call-site excerpts have ±3 context lines.
+- [ ] mini-express-app: tour exists for the `src/server.ts` entry; hop steps' anchors land on `src/routes/users.ts`, `src/services/userService.ts`, `src/db/repo.ts` declarations in order (freeze); call-site excerpts have ±3 context lines.
+- [ ] Each hop step's body facts carry `calleeSignature`/`calleeFile`/`calleeStartLine` for its callee (asserted on the fixture), and the final hop's facts reference the callee, not any "next step".
 - [ ] Overview step carries ≥ 2 evidence strings verbatim from the detector.
 - [ ] Recap breadcrumb equals the hop sequence; `truncated: true` case (maxDepth 2 config) shows the truncation fact.
 - [ ] Snippet with recursion: recursion branch note propagates into the hop facts.
-- [ ] Zero eligible entries (plain-docs) → builder returns nothing and pipeline availability already says unavailable (integration assert via 16's availability, not re-implemented here).
+- [ ] Zero surviving paths → `{ tours: [], unavailable: { reasonCode: "no-traceable-entries" } }` and run-builders (17) flips the merged availability.
 
 ## Validation
 

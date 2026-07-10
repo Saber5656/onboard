@@ -40,7 +40,9 @@ The effective config feeds every pipeline stage and is hashed into `meta.configH
    everywhere except `llm.baseUrl` and `viewer.title` (strict schema — absence is
    expressed by omission).
 4. Cross-field rules: `llm.baseUrl` **required non-null** when
-   `provider = "openai-compat"` (`config-baseurl-required`) and must be an http(s) URL;
+   `provider = "openai-compat"` (`config-baseurl-required`) and must parse as a URL
+   with protocol `http:` or `https:` — anything else (`file:`, `data:`, protocol-less,
+   malformed) → `config-baseurl-invalid`;
    for `provider = "anthropic"` it must be null or omitted — any non-null value →
    `config-baseurl-forbidden`. Every **effective** `entryPoints[].file` (from config
    file or `--entry`) is validated to exist under root via `safeJoin` — nonexistent →
@@ -64,7 +66,7 @@ The effective config feeds every pipeline stage and is hashed into `meta.configH
 
 - [ ] Defaults object deep-equals the DESIGN §4.3 listing (single table-driven test).
 - [ ] Unknown key `llm.apiKey` → exit-2-class `UsageError` with path in message.
-- [ ] Cross-field tests: `openai-compat` without `baseUrl` → `config-baseurl-required`; `anthropic` with non-null `baseUrl` → `config-baseurl-forbidden`; `anthropic` with `baseUrl: null` → valid; config-file `entryPoints` pointing at a missing file or outside root → `config-entry-missing`; `--config` pointing at a missing file → `config-not-found`.
+- [ ] Cross-field tests: `openai-compat` without `baseUrl` → `config-baseurl-required`; table-driven protocol tests (`file:///x`, `data:…`, `ftp://x`, `//host`, `not a url`) → `config-baseurl-invalid`; `anthropic` with non-null `baseUrl` → `config-baseurl-forbidden`; `anthropic` with `baseUrl: null` → valid; config-file `entryPoints` pointing at a missing file or outside root → `config-entry-missing`; `--config` pointing at a missing file → `config-not-found`.
 - [ ] `$schema` key present in the file: parses fine, and `configHash` equals the same config without `$schema`.
 - [ ] A `ghp_…` (36 alphanumerics) planted in `llm.model` → `config-contains-secret`; message does not contain the token.
 - [ ] Same effective config from (file) and (defaults + equivalent flags) produces identical `configHash`.

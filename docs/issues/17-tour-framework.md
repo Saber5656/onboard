@@ -13,44 +13,53 @@ license-header skipping, dedup by excerptId, and the bundle-wide excerpt registr
 
 Four tour builders (18–21) plug into this framework; the emitter (27) consumes the
 excerpt registry. Centralizing excerpt extraction keeps caps and dedup consistent and
-gives the secret gate (23) a single corpus to scan.
+gives the secret gate one uniform corpus of excerpt texts (the *full* gate corpus —
+narration bodies, README paragraph, manifest-derived strings — is assembled by
+issues 23/27).
 
 ## Scope
 
-- `src/tours/framework.ts` — `TourBuilder` type, `assembleTour({ kind, id, title, summary, steps }) → Tour` (validates ≥ 2 steps → else returns `TourUnavailable`), `makeStepId`, `estimatedMinutes = ceil(steps × 1.5)`.
-- `src/tours/excerpts.ts` — `createExcerptRegistry(root, files)` returning `{ takeExcerpt(file, startLine, endLine, opts?) → { excerptId } | null, all() → Record<string, CodeExcerpt> }`.
-- `src/tours/run-builders.ts` — executes selected builders in the fixed §5.6 order, honoring availability (16).
+- `src/tours/framework.ts` — `TourBuilder` type (single-tour kinds return `Tour | TourUnavailable`; **entry-flow is the one multi-tour kind** — its builder returns `{ tours: Tour[], unavailable: TourUnavailable | null }` and run-builders handles it specially), `assembleTour({ kind, id, title, summary, steps }) → Tour | TourUnavailable` (≥ 2 steps rule; `TourUnavailable = { kind, reason, reasonCode }`), `makeStepId`, `estimatedMinutes = ceil(steps × 1.5)`.
+- `src/tours/excerpts.ts` — `createExcerptRegistry(root, files)` returning `{ takeExcerpt(file, startLine, endLine, opts?) → { excerptId, file, startLine, endLine } | null` (the **final clamped/expanded span**, which callers use for `TourStep.anchor`), `all() → Record<string, CodeExcerpt> }`.
+- `src/tours/run-builders.ts` — `runBuilders(model, availability, config, strings) → { tours, availability, excerpts, warnings }`: executes selected builders in the fixed §5.6 order for kinds marked available; builder `TourUnavailable` results **update** the availability entries (merged output is what the emitter serializes into `meta.tourAvailability`).
+- `src/narrate/templates/keys.ts` — created **here** with the `StringTable` interface and a pass-through stub implementation (issue 22 replaces the stub tables without changing the import path — DESIGN §8.1 location).
 - Unit tests.
 
 ## Detailed Requirements
 
 1. `takeExcerpt` rules (§7.1/§7.6): clamp span to `excerpt.maxLines` (default 40) from
-   `startLine`; `opts.context: true` expands ±`contextLines` (call sites); `opts.fileHead: true`
-   starts after a leading comment block when that block matches license heuristics
-   (first non-empty lines are a comment containing any of `license|copyright|spdx`,
-   case-insensitive) and takes `maxLines / 2` lines.
-2. Reads via `safeJoin` from the FileNode set only; `lang: null` files (binary/minified)
-   → return null (caller must handle); CRLF normalized to LF in `text` (determinism —
-   documented; the anchor still refers to original line numbers, which are unchanged by
-   EOL normalization).
-3. Dedup: same (file, startLine, endLine, content) → same excerptId, registered once.
-   Registry `all()` returns key-sorted record.
+   `startLine`; `opts.context: true` expands ±`contextLines` (call sites);
+   `opts.fileHead: true` starts after a leading license header and takes
+   `maxLines / 2` lines. License-header rule (exact): skip a first-line shebang
+   (`#!…`); then a "leading comment block" = consecutive lines that are `//` comments,
+   or one `/* … */` block, or consecutive `#` lines (non-JS langs), ending at the first
+   blank/non-comment line; skip it **only** when its text matches
+   `/license|copyright|spdx/i`; otherwise start at line 1.
+2. Reads via `safeJoin` from the FileNode set only: a requested path absent from the
+   FileNode set, absolute, or containing `..` returns **null without any disk access**;
+   `lang: null` files (binary/minified) → null; CRLF normalized to LF in `text`
+   (determinism — the anchor still refers to original line numbers, which EOL
+   normalization does not change).
+3. Dedup happens on the **final normalized excerpt** (file, clamped startLine/endLine,
+   normalized text) — identical final spans share one registry entry and one excerptId
+   (§5.1 derives the id from exactly these fields). Registry `all()` returns key-sorted
+   record.
 4. Text is decoded UTF-8 (lossy replacement for invalid bytes) then
    `stripControlChars` (preserving `\t\n`).
-5. `run-builders.ts`: input = model + availability + config.tours; output =
-   `{ tours: Tour[], excerpts, warnings }`; builders receive a `StringTable` (issue 22;
-   until then a pass-through stub table is provided here with TODO markers) — the
-   framework defines the `StringTable` TypeScript interface so 18–21 can code against it
-   in parallel with 22.
+5. `runBuilders` merge rule: an available kind whose builder returns `TourUnavailable`
+   flips its availability entry to `{ available: false, reason, reasonCode }`; tours
+   keep the §5.6 fixed order; entry-flow tours sorted by entryId.
 6. Every step passes zod `TourStepSchema` at assembly time, in all environments —
    validation cost is negligible at ≤ ~100 steps, and failing fast beats emitting a
    malformed bundle.
 
 ## Acceptance Criteria
 
-- [ ] `assembleTour` with 1 step returns TourUnavailable with reason `too-few-steps`; with 2+ steps produces sequential `stepId`s (`architecture/01-…`, zero-padded) and correct estimatedMinutes.
-- [ ] Excerpt windowing: 100-line file from line 10 → 40 lines (10–49); context option expands a 1-line call site to 7 lines (±3); fileHead on a fixture file with an MIT header starts after the header and takes 20 lines.
-- [ ] Dedup: two identical requests yield one registry entry; differing end lines yield two.
+- [ ] `assembleTour` with 1 step returns TourUnavailable (`too-few-steps`); with 2+ steps produces sequential `stepId`s (`architecture/01-…`, zero-padded) and correct estimatedMinutes; an invalid step (schema violation) fails assembly with a deterministic error; a valid minimal step passes.
+- [ ] Excerpt windowing: 100-line file from line 10 → lines 10–49 and the returned span says so; context option expands a 1-line call site to 7 lines; fileHead on a file with an MIT `/* */` header and on one with `//` header starts after the header; a shebang line is skipped; a non-license leading comment is kept.
+- [ ] Dedup: two requests whose spans clamp to the same final range yield one registry entry; genuinely different final ranges yield two.
+- [ ] Path safety: requests for `../outside`, an absolute path, and a path not in the FileNode set each return null with zero fs reads (spy on the read function).
+- [ ] `runBuilders`: a builder stub returning TourUnavailable flips the merged availability entry (asserted end-to-end with a fake availability input).
 - [ ] CRLF fixture file: `text` contains no `\r`; startLine/endLine match the original file's numbering.
 - [ ] Binary/minified file request returns null without throwing.
 

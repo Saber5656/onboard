@@ -16,7 +16,7 @@ so a lower-capability agent can implement from recorded transcripts without live
 
 ## Scope
 
-- `src/llm/adapter.ts` — interface (§10.5 verbatim) + `resolveApiKey(provider, env)` + `createAdapter(config.llm)`.
+- `src/llm/adapter.ts` — interface (§10.5 verbatim; `name: string`) + `resolveApiKey(provider, env)` + `createAdapter(config.llm)` + `class LlmProviderError extends Error { code: "llm-provider-error" | "llm-malformed-stream" | "llm-timeout"; status?: number }` (caught by narration → template fallback; by chat → 502/in-band error; it never maps to its own exit code — an uncaught escape is a bug and exits 1).
 - `src/llm/anthropic.ts`, `src/llm/openai-compat.ts` — implementations.
 - `src/llm/sse.ts` — line-based SSE parser (`data:` events, `[DONE]` handling, multi-line data).
 - `src/llm/mock.ts` — deterministic mock (scripted deltas + usage; injectable failures/latency).
@@ -35,33 +35,42 @@ so a lower-capability agent can implement from recorded transcripts without live
    Emit one final `usage` item combining captured counts.
 3. `openai-compat`: POST `{baseUrl}/chat/completions` (baseUrl from config, trailing
    slash normalized); header `Authorization: Bearer <key>`; body `{ model, temperature,
-   max_tokens, messages: [{role:"system"|"user"|"assistant"}], stream: true,
-   stream_options: { include_usage: true } }`; parse `choices[0].delta.content` deltas,
-   final chunk `usage {prompt_tokens, completion_tokens}` → usage item; `data: [DONE]`
-   terminates.
-4. Key resolution (§4.4): `ONBOARD_LLM_API_KEY` else provider var; missing →
+   max_tokens, messages, stream: true, stream_options: { include_usage: true } }` where
+   `messages` = `[{role:"system", content: req.system}, ...req.messages]` (the
+   interface's separate `system` is prepended); parse `choices[0].delta.content`
+   deltas, final chunk `usage {prompt_tokens, completion_tokens}` → usage item;
+   `data: [DONE]` terminates.
+4. SSE robustness (both providers): comment lines and unknown event types are ignored;
+   invalid JSON in a recognized `data:` payload → `LlmProviderError("llm-malformed-stream")`.
+5. Key resolution (§4.4): `ONBOARD_LLM_API_KEY` else provider var; missing →
    `UsageError("llm-key-missing")` naming the expected variables (never echoing values).
-5. Hardening (§11.7): `fetch(..., { redirect: "error", signal })`; connect timeout 10 s
-   and idle timeout 60 s implemented via AbortController + inter-chunk timer; non-2xx →
-   `LlmProviderError` with status + first 200 chars of body (body may contain provider
-   error JSON — safe to log; keys never appear in requests' logs: only header names are
-   loggable, enforced by never logging request init objects).
-6. HTTP(S) only: `baseUrl` must parse as http/https URL (already zod-side in 03 — add
-   the protocol check there if missing; assert here defensively too).
-7. Mock adapter: constructor takes `{ script: Array<delta|usage|error|hangMs> }`;
-   deterministic; exported for other issues' tests. It ships inside the package (it is
-   tiny) but is unreachable from any CLI path: the config `provider` enum has only the
-   two real values (enforced by the config schema; issue 37 later adds an env-gated,
-   `NODE_ENV=test`-only seam for e2e).
+6. Hardening (§11.7): `fetch(..., { redirect: "error", signal })`; connect timeout 10 s
+   (time to response headers) and idle timeout 60 s (inter-chunk), both via
+   AbortController — adapter-internal timeouts throw `LlmProviderError("llm-timeout")`;
+   a **caller-supplied** abort ends the iterator quietly (normal return, no throw).
+   Non-2xx → `LlmProviderError` with status; the surfaced/logged detail is the first
+   200 chars of the body **after** passing the logger redaction filter (provider errors
+   can echo prompt fragments — never log raw). Request init objects are never logged.
+7. Defense in depth: `createAdapter` re-asserts `baseUrl` protocol ∈ {http, https}
+   (normative validation lives in 03; this is the backstop) and rejects otherwise with
+   `UsageError("config-baseurl-invalid")`.
+8. Mock adapter: constructor takes `{ script: Array<delta|usage|error|hangMs> }`;
+   `name: "mock"` (interface `name` is `string` per §10.5); deterministic; exported for
+   other issues' tests. It ships inside the package (tiny) but is unreachable from any
+   CLI path: the config `provider` enum has only the two real values (enforced by the
+   config schema; issue 37 later adds an env-gated, `NODE_ENV=test`-only seam for e2e).
 
 ## Acceptance Criteria
 
-- [ ] Contract tests replay both transcript fixtures through the stub server: assembled text and usage numbers match frozen expectations; abort mid-stream closes within 100 ms.
+- [ ] Contract tests replay both transcript fixtures through the stub server: assembled text and usage numbers match frozen expectations; caller abort mid-stream ends the iterator quietly within 100 ms (no throw); the openai-compat request body's first message is the prepended system message.
 - [ ] Redirect attempt (stub replies 302) → `LlmProviderError`, no second request (assert stub hit-count 1).
-- [ ] Idle hang > timeout (mock server stalls) → error, iterator ends; no unhandled rejection (process-level listener assert).
+- [ ] Timeouts: a stub that never sends headers → `llm-timeout` at ~10 s (fake timers); a stub that stalls mid-stream → `llm-timeout` at the idle limit; no unhandled rejections (process-level listener assert).
+- [ ] Malformed stream: invalid JSON in a `data:` line → `llm-malformed-stream` (both providers); SSE comments and unknown events are ignored without error.
+- [ ] Provider error body containing a planted key-like string is logged redacted (canary absent from captured logs).
 - [ ] `resolveApiKey`: precedence and missing-key error message list both env var names; with `ONBOARD_LLM_API_KEY` set, provider-specific vars are ignored.
+- [ ] `createAdapter` protocol backstop: `file://` baseUrl → `config-baseurl-invalid`, no request attempted.
 - [ ] `openai-compat` against a baseUrl with trailing slash and without produce identical request paths (`…/chat/completions`).
-- [ ] grep-style test: `src/llm/` contains no import of `@anthropic-ai/sdk` or `openai` (ADR-008 guard).
+- [ ] Import-level test: no module in `src/llm/` imports from `"openai"` or `"@anthropic-ai/sdk"` (parse import specifiers — a plain grep would false-positive on `openai-compat.ts`), and package.json has neither dependency (ADR-008 guard).
 
 ## Validation
 

@@ -33,27 +33,36 @@ analysis at all — it consumes only manifest (07), git (08), docs files (06), a
    pnpm→`pnpm install`, yarn→`yarn`, bun→`bun install`, npm→`npm install`; null →
    ecosystem note from otherEcosystems or generic), nodeVersion raw string.
 3. Run & test: scripts table (dev/build/test/lint as present); single-test command from
-   runner table: vitest → `pnpm vitest run <path>` (pm-adjusted prefix: npm→`npx`,
-   yarn→`yarn`, bun→`bunx`), jest → `<px> jest <path>`, mocha → `<px> mocha <path>`,
-   go → `go test ./<pkg>/...`, pytest → `pytest <path>::<test>` (go/pytest only when
-   otherEcosystems indicates); test directory hint = modules with role tests (paths).
+   the runner table, with `<path>` = the first `FileNode` (byte-order) having
+   `isTest: true` and the runner's extension: vitest → `pnpm vitest run <path>`
+   (pm-adjusted prefix: npm→`npx`, yarn→`yarn`, bun→`bunx`), jest → `<px> jest <path>`,
+   mocha → `<px> mocha <path>`. Other ecosystems get generic commands only when
+   detectable: go (`go.mod` present) → `go test ./...`; python + an `isTest` `.py`
+   file → `pytest <path>` (no `::test` suffix in v1 — test-function names are not
+   detected). No matching test file → the single-test line is omitted. Test directory
+   hint = modules with role tests (paths).
 4. Lint step: linters detected list + config file presence (`eslint.config.*`,
    `.prettierrc*`, `biome.json`) from FileNode set.
 5. CI step: workflow names + trigger keys + job names (07 output verbatim).
 6. Conventions step: CONTRIBUTING.md first paragraph (via excerpt service `fileHead`
-   on the markdown file, maxLines 15) when present; else README-based fallback; CoC
-   presence noted in facts.
+   on the markdown file, maxLines 15) when `model.docsFiles` has `kind:
+   "contributing"`; else README-based fallback (same mechanism on the readme docsFile);
+   CoC presence = `model.docsFiles` has `kind: "codeofconduct"` (fact only).
 7. Where to start (§7.5 item 7): top-3 modules by count of `commitDatesIso` entries
    within 90 days before headCommitterDateIso, summed across module files
    (`GitStats.perFile[].commitDatesIso` from issue 08), excluding roles
-   {infra, build, tests, docs}; tie-break module path asc; each with rationale facts
+   {infra, build, tests} (per §7.5 — docs modules stay eligible; docs contributions
+   are good first PRs); tie-break module path asc; each with rationale facts
    (recent-commit count, role). No git → step omitted.
 8. Facts must never invent commands: only table-derived or manifest-verbatim strings.
+   All repo-derived strings (script bodies, workflow names, docs excerpts) enter the
+   step **only as typed StringTable facts** and are rendered through the 22 helpers
+   (`inlineCode`/`markdownText`) — never interpolated raw into markdown (§11.5).
 
 ## Acceptance Criteria
 
 - [ ] mini-express-app: steps 1–7 all present; single-test command is exactly `pnpm vitest run test/users.test.ts`-shaped (template + real path from tests module); CI step lists the fixture's 2 job names; where-to-start includes `src/services` (scripted history) with rationale.
-- [ ] js-lib (npm, no CI, no CONTRIBUTING): setup uses `npm install`; CI and conventions steps omitted; tour still ≥ 4 steps.
+- [ ] js-lib (npm, no CI, no CONTRIBUTING): setup uses `npm install`; CI step omitted; conventions step present via the README fallback; tour still ≥ 4 steps.
 - [ ] plain-docs (no manifest): welcome + docs/conventions (+ generic) — tour available with ≥ 2 steps; no fabricated commands anywhere (grep facts for `install` — only from the table when pm known).
 - [ ] Runner table unit tests: one case per (runner × package manager) combination in the table.
 - [ ] Double-run determinism.

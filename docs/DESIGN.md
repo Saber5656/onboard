@@ -275,7 +275,7 @@ Strict zod schema (unknown keys → exit 2 listing them). All fields optional; d
     "maxOutputTokensPerAnswer": 800,
     "topK": 8
   },
-  "secretScan": { "enabled": true, "allowlist": [] },   // allowlist of finding ids (§11.4)
+  "secretScan": { "allowlist": [] },    // per-finding ids (§11.4); there is NO global disable (ADR-006)
   "viewer": { "title": null }           // override site title (default: repo name)
 }
 ```
@@ -337,8 +337,12 @@ interface RepoModel {
   ciWorkflows: CiWorkflow[];
   docsFiles: { path: string; kind: "readme"|"contributing"|"license"|"codeofconduct" }[];
   git: GitStats | null;              // null when --no-git or not a repo
-  modules: ModuleInfo[];             // §6.5
   ts: TsAnalysis | null;             // null when no TS/JS sources loadable
+  symbols: SymbolRef[];              // §6.7; empty when ts == null
+  imports: { edges: { from: string; to: string }[];
+             externals: { pkg: string; importCount: number }[] };   // §6.8
+  modules: ModuleInfo[];             // §6.5
+  moduleEdges: { from: string; to: string; weight: number }[];      // §6.5 module-level aggregation (ids)
   entryPoints: EntryPoint[];         // §6.9
   callPaths: CallPath[];             // §6.10; empty when ts == null
   warnings: PipelineWarning[];
@@ -369,6 +373,7 @@ interface ModuleInfo {
   fileCount: number; loc: number;
   fanIn: number; fanOut: number;     // module-level import edges
   topSymbols: string[];              // ≤5 exported symbol names
+  files: string[];                   // assigned file paths — in-memory only; STRIPPED from the bundle (§5.4)
 }
 type ModuleRole = "entry"|"http-api"|"ui"|"domain"|"data-access"|"infra"|"config"
                 | "tests"|"docs"|"build"|"scripts"|"shared-utils"|"unknown";
@@ -407,7 +412,8 @@ interface TourBundle {
     dirty: boolean;
     locale: "en" | "ja";
     configHash: string;              // sha256 of effective config (stable-serialized)
-    tourAvailability: { kind: TourKind; available: boolean; reason: string | null }[];
+    tourAvailability: { kind: TourKind; available: boolean; reason: string | null;
+                        reasonCode: string | null }[];   // stable codes, e.g. "no-git-flag" | "git-unavailable" | "no-ts" | "no-traceable-entries" | "too-few-steps"
     tokenReport: TokenReport | null; // null when LLM narration disabled
     stats: { files: number; loc: number; languages: { lang: string; files: number }[] };
   };
@@ -453,7 +459,7 @@ interface TokenReport {
 ```ts
 interface ViewerIndex {
   files: { p: string; s: number; l: string | null }[];   // path, size, lang; sorted by p
-  modules: ModuleInfo[];                                  // §5.2 shape minus fan counts ok to include fully
+  modules: Omit<ModuleInfo, "files">[];                   // §5.2 shape; the per-module file list is stripped (size)
   symbols: { file: string; name: string; kind: string; line: number; signature: string }[]; // exported only, sorted (file, line)
   search: Bm25Index;                                      // §10.4
 }
@@ -512,7 +518,7 @@ Graceful degradation matrix (drives `meta.tourAvailability`):
 | No TS/JS sources | `ts = null`; entry-flow tour unavailable (`reason: "requires TS/JS analysis in v1"`) |
 | TS present but zero flow-eligible call paths (no entries detected, or all paths < 2 hops) | entry-flow tour unavailable (`reason: "no traceable entry points"`) |
 | No package.json | contributing tour degrades to generic steps (README/CI only); never unavailable |
-| < 5 analyzable files | generate succeeds with architecture tour only + prominent warning |
+| < 5 analyzable files | generate succeeds; warning `pipeline-tiny-repo`; the architecture tour is the only *guaranteed* tour — the others still appear when their own conditions hold |
 | tsconfig unparsable | synthesize default program (§6.6) + warning |
 
 ### 6.2 fs-scan (`analyze/fsscan/`)
@@ -552,7 +558,7 @@ Purpose: fold files into ≤ ~30 human-meaningful "modules" (directories).
 1. Candidate module roots: depth-1 and depth-2 directories under root and under `src/` (plus workspace package roots when manifest.workspaces present).
 2. Fold rule: a candidate with < 3 files merges into its parent; nested candidates both kept only if child has ≥ 8 files.
 3. Role classification: first match wins, by (a) exact/major dir-name table (`routes|api|controllers → http-api`, `components|pages|views|ui → ui`, `models|domain|core|services → domain`, `db|repositories|dao|prisma|migrations → data-access`, `infra|adapters|clients|queue → infra`, `config|settings → config`, `test|tests|__tests__|e2e → tests`, `docs|documentation → docs`, `scripts|tools|bin → scripts`, `util|utils|lib|shared|common → shared-utils`, `build|ci → build`), then (b) contains an entry point → `entry`, then (c) `unknown`.
-4. Metrics: fileCount, loc (sum of read files' line counts), module-level fanIn/fanOut from file import edges (§6.8) aggregated, topSymbols = up to 5 exported symbols by fan-in of their file.
+4. Metrics: fileCount, loc (sum of read files' line counts), module-level fanIn/fanOut from file import edges (§6.8) aggregated, topSymbols = up to 5 exported symbols by fan-in of their file. The mapper also emits `RepoModel.moduleEdges` (`{ from: moduleId, to: moduleId, weight: file-edge count }`, deduped, sorted (from, to)) — the dep-graph input (§7.2).
 
 ### 6.6 TS project loader (`analyze/ts/`)
 
@@ -612,7 +618,7 @@ Steps:
 1. **Welcome** — repo name, README first paragraph, stats (files, loc, top languages), tour index.
 2. **Repo map** — `module-map` widget. Treemap layout: strip algorithm — modules sorted by loc desc, rows of ≤ 4, coordinate space 0..1000×1000, row height ∝ row loc share; deterministic (sorted input, integer rounding via `Math.round`).
 3. **Top modules** — one step per module, top N = min(8, modules with role ∉ {tests, docs, build}) ranked by `0.3·norm(fileCount) + 0.3·norm(loc) + 0.4·norm(fanIn)`; each step: role, metrics, key exports, representative excerpt = highest-fan-in exported symbol's declaration.
-4. **Dependencies** — `dep-graph` widget (module nodes; layered by topological depth of module import DAG, cycles broken at lowest-weight edge with note; x = depth·220, y = slot·90 sorted by module id) + narration of the 3 heaviest edges.
+4. **Dependencies** — present only when ≥ 1 module edge exists (docs-only repos omit this step): `dep-graph` widget (module nodes; layered by topological depth of the module import DAG; deterministic cycle handling: iterate edges by weight desc, tie (from, to) asc, keep an edge only if it does not create a cycle — skipped edges are noted in the step facts; x = depth·220, y = slot·90 sorted by module id) + narration of the 3 heaviest edges (weight desc, tie (from, to) asc).
 5. **Where next** — pointers to the other available tours (uses `tourAvailability`).
 
 ### 7.3 Entry-point flow tour (`kind: entry-flow`, one tour per entry, requires ts + callPaths)
@@ -645,7 +651,7 @@ Every step body is produced from a typed template function (§8.1) receiving onl
 ### 8.1 Template engine (`narrate/templates/`)
 
 - `StringTable` = typed map `key → (facts) → string` per locale (`en.ts`, `ja.ts`); both files export the same key set (type-checked exhaustively — missing key = compile error).
-- Output is markdown **subset**: paragraphs, bold, inline code, fenced code, lists, links to `#/step/...` anchors only. No raw HTML (enforced at emit, §11.5).
+- Output is markdown **subset**: paragraphs, bold, inline code, fenced code, lists, links to `#/tour/<tourId>/step/<n>` anchors only (the §9.2 router routes — the single canonical internal-link form). No raw HTML (enforced at emit, §11.5).
 - Tone rules (documented in the table file header): friendly-precise, ≤ 140 words/step, facts only — a template must not claim anything not present in its typed facts input.
 - Numbers formatted via invariant helpers (`formatCount`, `formatDate` — fixed `en-US`/ISO, no locale drift; ja tables may use 日本語 phrasing but identical data).
 
@@ -667,7 +673,7 @@ Every outbound string (facts JSON) passes the secret scanner (§11.4); block-sev
 
 ### 8.4 Narration cache
 
-`.onboard/cache/narration-cache.json`: `{ version: PROMPT_VERSION, model, entries: { [sha256(model + ":" + PROMPT_VERSION + ":" + stableJson(facts))]: { body, inputTokens, outputTokens } } }`. Hit → no API call (`stepsFromCache++`). Cache file is local-only, never published, safe to delete.
+`.onboard/cache/narration-cache.json`: `{ version: PROMPT_VERSION, model, order: string[], entries: { [key]: { body, inputTokens, outputTokens } } }` where `key = sha256(model + ":" + PROMPT_VERSION + ":" + locale + ":" + stableJson(redactedFacts))` (locale is part of the prompt; the key hashes the **redacted** facts actually sent) and `order` tracks insertion for size-pruning. Hit → no API call (`stepsFromCache++`) after re-validating the cached body with the same output validator (§8.2). Cache file is local-only, never published, safe to delete.
 
 ### 8.5 Token accounting
 
@@ -760,7 +766,7 @@ Session token budget: cumulative provider-reported tokens ≤ `chat.maxTokensPer
 
 ### 10.4 Retrieval & context assembly (deterministic)
 
-- **Index** (built at generate time into `ViewerIndex.search`): BM25, `k1 = 1.2`, `b = 0.75`. Documents: steps (title×3 + body×1.5), exported symbols (name×3 camel/snake-split + signature×1), modules (name×2 + role), excerpts (text×1, first 2000 chars), file paths (×2). Tokenizer: lowercase → split on non-alphanumerics → split camelCase → drop len < 2. Stored as `{ vocab: {term: df}, docs: [{id,type,len}], postings: {term: [docIdx, tf][]} }`.
+- **Index** (built at generate time into `ViewerIndex.search`): BM25, `k1 = 1.2`, `b = 0.75`. Documents: steps (title×3 + body×1.5), exported symbols (name×3 camel/snake-split + signature×1), modules (name×2 + role×1; module name = basename of path, `root` for `"."`), excerpts (text×1, first 2000 chars). Weighted term frequencies may be fractional (floats are fine; determinism holds). Tokenizer: insert camelCase/acronym/digit boundaries on the original string → lowercase → split on non-alphanumerics → drop tokens len < 2. Stored as `{ vocab: {term: df}, docs: [{id, type: "step"|"symbol"|"module"|"excerpt", len}], postings: {term: [docIdx, tf][]} }` (keys and lists sorted).
 - **Query time** (server): same tokenizer; score all; boost ×1.3 for docs belonging to current `tourId`/`stepId` context; topK (default 8), ties → doc id lexicographic. Assemble context ≤ 12,000 chars: step bodies verbatim, symbols as signature lines, excerpts as fenced code with `path:start-end` header.
 - Prompt: system = "Answer questions about this codebase using ONLY the provided context. Say 'the tour doesn't cover that' when the context is insufficient. Concise. No HTML." + context blocks wrapped in `<context>` delimiters, then history (≤ 8), then question.
 - `meta.contextRefs` in the SSE stream discloses exactly which artifacts were retrieved (transparency; UI renders them as chips linking to steps/excerpts).
@@ -769,7 +775,7 @@ Session token budget: cumulative provider-reported tokens ≤ `chat.maxTokensPer
 
 ```ts
 interface LlmAdapter {
-  name: "anthropic" | "openai-compat";
+  name: string;                       // "anthropic" | "openai-compat" in production; test mocks use other names
   streamComplete(req: { system: string; messages: {role:"user"|"assistant";content:string}[];
                         model: string; maxOutputTokens: number; temperature: number; signal: AbortSignal })
     : AsyncIterable<{ type: "delta"; text: string } | { type: "usage"; inputTokens: number; outputTokens: number }>;
@@ -847,7 +853,7 @@ flowchart TB
 
 ### 11.4 Secret gate (`secretscan/`) — fail closed
 
-Runs at two points: (a) redaction of LLM-bound facts (§8.3), (b) **emit gate** over every string that entered the bundle/site from file content (excerpt texts, narration bodies, README paragraphs).
+Runs at two points: (a) redaction of LLM-bound facts (§8.3), (b) **emit gate** over every repo-derived string that enters the bundle/site — normatively: excerpt texts, step bodies **and titles**, `readme.firstParagraph`, manifest script strings, and symbol `signature`/`jsdocSummary` strings (they reach `ViewerIndex.symbols` and the search vocab). There is no global disable switch — the only override is the per-finding allowlist (ADR-006).
 
 Block-severity rules (emit → exit 4 unless finding id allowlisted):
 | ruleId | Pattern |
@@ -897,7 +903,7 @@ No telemetry. No network I/O unless LLM explicitly configured (then: configured 
 
 - Error taxonomy: `UsageError` (→ exit 2), `AnalysisError` (→ 3), `SecretGateError` (→ 4), anything else → 1. Every thrown error carries `code` (kebab-case, stable, e.g. `config-unknown-key`, `port-in-use`, `secret-gate-blocked`) — codes are the CLI's machine contract, listed in `docs/` when they stabilize.
 - Logging: human logs → stderr (`info/warn/error`, `--verbose` adds `debug`, `--quiet` = errors only); machine output → stdout only with `--json` (single JSON document = run-report). Logger applies key-redaction filter (any env-key value appearing in a message → `***`).
-- `run-report.json`: `{ onboardVersion, startedAtIso?: omitted-when-dirty rules follow §5.6, stageTimingsMs, counts { files, symbols, edges, steps }, warnings[], tokenReport?, secretFindings (warn-level only), capsHit[], error?: { code, message } }` — `error` present only when the run failed (the `--json` stream still emits the report in failure cases, except secret-gate blocks where no files are written but stdout still carries the report).
+- `run-report.json`: `{ onboardVersion, startedAtIso?: omitted-when-dirty rules follow §5.6, stageTimingsMs, counts { files, symbols, edges, entryPoints, callPaths, steps }, availability, warnings[], tokenReport?, secretFindings (warn-level only), capsHit[], error?: { code, message } }` — `error` present only when the run failed (the `--json` stream still emits the report in failure cases, except secret-gate blocks where no files are written but stdout still carries the report).
 
 ## 13. Performance & Limits (defaults table)
 
@@ -910,6 +916,7 @@ No telemetry. No network I/O unless LLM explicitly configured (then: configured 
 | symbols per file | 40 | truncate, warn |
 | excerpt lines | 40 | clamp |
 | co-change pairs | 200 | truncate by count |
+| search-index excerpt docs | 500 (by excerptId asc) | truncate, warn |
 | site payload | warn > 15 MB | warn only |
 | narration run tokens | 60,000 | fallback to templates |
 | chat session tokens | 100,000 | 429 budget_exceeded |
