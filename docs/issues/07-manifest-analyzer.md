@@ -16,33 +16,51 @@ Feeds entry-point evidence (§6.9), the contributing tour (§7.5), and narration
 
 ## Scope
 
-- `src/analyze/manifest/index.ts` — `analyzeManifest(root, files, logger) → { manifest, ciWorkflows, warnings }` (consumes FileNode[] from 06; reads only files present there).
+- `src/analyze/manifest/index.ts` — `analyzeManifest(root, files, logger) → { manifest, readme, ciWorkflows, warnings }` (consumes FileNode[] from 06; reads only files present there, always via `safeJoin(root, rel)` — §11.3).
 - `src/analyze/manifest/deps-table.ts` — name→tag table (framework/server/test-runner/lint).
 - Unit tests on fixtures.
 
 ## Detailed Requirements
 
-1. `ManifestInfo` shape (add to model in this issue if not present — coordinate with §5.2):
-   `{ name, version, description, packageManager: "pnpm"|"yarn"|"bun"|"npm"|null, nodeVersion: string|null, scripts: Record<string,string> (only dev/start/build/test/lint kept), bin: Record<string,string>, mainEntry: string|null (resolved main/exports target when it exists in files), workspaces: string[], depNames: string[], devDepNames: string[], detected: { frameworks: string[], testRunners: string[], linters: string[] }, otherEcosystems: { kind: "python"|"go"|"rust"|"ruby"|"jvm", file: string }[], readme: { title: string|null, firstParagraph: string|null, badgeCount: number } | null }`.
-2. Malformed `package.json` → warning `manifest-parse-error`, `manifest = null`
+1. `ManifestInfo` shape (finalizes the issue-02 placeholder; matches §5.2):
+   `{ name, version, description, packageManager: "pnpm"|"yarn"|"bun"|"npm"|null, nodeVersion: string|null, scripts: Record<string,string> (only dev/start/build/test/lint kept), bin: Record<string,string>, mainEntry: string|null (resolution rule 6), workspaces: string[], depNames: string[], devDepNames: string[], detected: { frameworks: string[], testRunners: string[], linters: string[] }, otherEcosystems: { kind: "python"|"go"|"rust"|"ruby"|"jvm", file: string }[] }`.
+   README data is **not** part of ManifestInfo: it is returned separately and stored on
+   `RepoModel.readme` (§5.2) so repos without package.json keep it. CONTRIBUTING/LICENSE/
+   CODE_OF_CONDUCT presence is already provided by fs-scan `docsFiles` (§6.2) — do not
+   re-detect here.
+2. Content extraction only reads files that fs-scan fully read (`sha256 !== ""`);
+   lockfile and config detection that needs only *presence* uses the FileNode path set.
+   Malformed `package.json` → warning `manifest-parse-error`, `manifest = null`
    (contributing tour degrades per §6.1). JSON parse only — never `require()` it.
 3. Lockfile precedence when several exist: pnpm-lock.yaml > yarn.lock > bun.lockb > package-lock.json (warn `manifest-multiple-lockfiles`).
 4. Node version priority: `engines.node` > `.nvmrc` > `.tool-versions` (nodejs line). Store raw string.
-5. Deps table (initial, extensible): frameworks `next nuxt astro remix express fastify koa @nestjs/core react vue svelte`; testRunners `vitest jest mocha ava`; linters `eslint biome prettier oxlint`. Match against dep+devDep names exactly.
-6. README extraction: first `# ` heading as title; first non-heading, non-badge paragraph
-   (plain text, markdown stripped naively: remove `*_`[]()` marks), ≤ 400 chars ellipsized;
-   badgeCount = image links in the first 10 lines.
-7. Workflows: for each `.github/workflows/*.y?(a)ml` in files: parse YAML (add `yaml`
-   parser? **No new runtime dep** — implement a minimal line-based extractor: `name:`
-   value, top-level `on:` keys, `jobs:` first-level key names; documented as heuristic).
-   Parse failure → record `{ file, name: basename }` + warning `manifest-workflow-parse`.
-8. All output arrays sorted (names asc, files asc); all strings control-char-stripped.
+5. Deps table exactly the DESIGN §6.3 list: frameworks `next nuxt astro vite express
+   fastify koa react vue svelte` plus mapping `@nestjs/core → nest`; testRunners
+   `vitest jest mocha` plus rule "scripts.test contains `node --test` → node:test";
+   linters `eslint biome prettier`. Match against dep+devDep names exactly; extending
+   the table is a DESIGN §6.3 change first.
+6. `mainEntry` resolution (deterministic v1 heuristic): try in order `main`,
+   `exports` when it is a string, `exports["."]` when string, `exports["."].default`
+   then `exports["."].import` when strings — accept only a relative path that exists in
+   the FileNode set (else null). Arrays and other conditional forms → null.
+7. README extraction (→ `readme` output): first `# ` heading as title; first
+   non-heading, non-badge paragraph (plain text, markdown stripped naively: remove
+   ``*_`[]()`` marks), ≤ 400 chars ellipsized; badgeCount = image links in the first
+   10 lines. Runs whenever fs-scan found a readme docsFile, independent of package.json.
+8. Workflows: for each `.github/workflows/*.yml` or `*.yaml` in files: minimal
+   line-based extraction (no YAML dependency): `name:` value; `on:` triggers supporting
+   the three forms — scalar (`on: push`), list (`on: [push, pull_request]`), and map
+   (indented keys under `on:`); `jobs:` first-level key names. Documented as heuristic;
+   failure → record `{ file, name: basename }` + warning `manifest-workflow-parse`.
+9. All output arrays sorted (names asc, files asc); all strings control-char-stripped.
 
 ## Acceptance Criteria
 
-- [ ] mini-express-app: name/scripts/engines extracted; packageManager `pnpm`; framework `express`; runner `vitest`; README title + paragraph non-null; ci.yml summarized with 2 job names.
+- [ ] mini-express-app: name/scripts/engines extracted; packageManager `pnpm`; framework `express`; runner `vitest`; readme title + paragraph non-null; ci.yml summarized with its workflow `name`, `on:` trigger keys, and 2 job names.
+- [ ] Workflow trigger forms: scalar, list, and map `on:` variants (three inline fixtures) each extract the expected trigger names.
 - [ ] js-lib: `mainEntry: "index.js"`; no frameworks; otherEcosystems empty.
-- [ ] plain-docs: `manifest: null` (no package.json) without warnings beyond `manifest-missing`; readme still extracted (readme lives in `docsFiles`/README parse must not depend on package.json presence — assert).
+- [ ] `exports`-only package fixtures: string form, `"."`-string form, and `"."`-conditional (`default`/`import`) form each resolve; an array-form `exports` yields `mainEntry: null`.
+- [ ] plain-docs: `manifest: null` with warning `manifest-missing`; `readme` still extracted (asserts independence from package.json).
 - [ ] Malformed package.json fixture (inline in test) → `manifest: null` + `manifest-parse-error`, no throw.
 - [ ] A `pyproject.toml` planted in a temp fixture is reported as `{ kind: "python" }`.
 

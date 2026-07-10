@@ -16,34 +16,51 @@ the dep-graph widget layout. External package counts feed narration ("uses expre
 
 ## Scope
 
-- `src/analyze/imports/index.ts` — `buildImportGraph(ts: TsAnalysis, files, logger) → { edges: { from: string, to: string }[], externals: { pkg: string, importCount: number }[], warnings }`.
+- `src/analyze/imports/index.ts` — `buildImportGraph(ts: TsAnalysis | null, files, logger) → { edges: { from: string, to: string }[], externals: { pkg: string, importCount: number }[], warnings }`; `ts: null` → empty edges/externals, no warning (the loader already warned).
 - Unit tests on fixtures.
 
 ## Detailed Requirements
 
 1. Specifier sources per file: `ImportDeclaration`, `ExportDeclaration` with module
-   specifier, `require("literal")` call expressions, `import("literal")` dynamic imports
-   with string-literal argument. Non-literal dynamic import/require → increment
-   per-file counter, single warning `imports-dynamic-unresolved` (file + count).
-2. Resolution: use the module specifier's resolved source file from ts-morph
-   (`getModuleSpecifierSourceFile()`); fallback for `.js`-suffixed NodeNext specifiers
-   already handled by the compiler. Resolved file must be inside the project **and**
-   present in the fs-scan FileNode set; otherwise treat as external.
-3. External classification: bare specifiers map to package name (`@scope/pkg` keeps
-   scope; deep imports `pkg/sub` count for `pkg`; `node:*` builtins grouped as `node`).
-   Relative specifiers that fail to resolve → warning `imports-unresolved` (file +
-   specifier), not an edge.
-4. Output: `edges` deduped, self-edges dropped, sorted by (from, to) byte order.
-   `externals` sorted by importCount desc then pkg asc.
-5. Never throw for content reasons; per-file try/catch → `imports-file-error` warning.
+   specifier (`export … from`, `export * from`), `require("literal")` call expressions,
+   `import("literal")` dynamic imports with string-literal argument (edge extraction for
+   the literal call forms is normative per DESIGN §6.8). Non-literal dynamic
+   import/require → increment per-file counter, single warning
+   `imports-dynamic-unresolved` (file + count).
+2. Resolution — two paths: (a) import/export declarations use ts-morph's
+   `getModuleSpecifierSourceFile()`; (b) literal `require(...)`/`import(...)` call
+   expressions use the TypeScript module-resolution API with the containing file and the
+   project's compiler options. A resolved file counts as in-repo only when its
+   normalized repo-relative POSIX path is present in the fs-scan FileNode set; edge
+   endpoints are always those normalized paths (never absolute, §5.1).
+3. Classification of non-in-repo resolutions:
+   - bare specifiers → external package name by exact algorithm: `node:*` **and** Node
+     builtin names → `node`; `@scope/name[/…]` → `@scope/name`; `name[/…]` → `name`;
+   - relative specifiers with an asset extension
+     (css scss sass less styl svg png jpg jpeg gif webp ico woff woff2) → silently
+     ignored (no edge, no external, no warning);
+   - other relative specifiers that fail to resolve → warning `imports-unresolved`
+     (file + specifier), no edge;
+   - relative specifiers that resolve to a file **not** in the FileNode set
+     (excluded/oversized/sensitive) → warning `imports-out-of-scope`, no edge, no
+     external count (§11 boundary — never surface excluded paths beyond the warning).
+4. `externals[].importCount` = number of literal import/export/require/import() sites
+   referencing the package, counted before edge dedupe (per occurrence, per file).
+5. Output: `edges` deduped, self-edges dropped, sorted by (from, to) with the shared
+   `byteOrderCompare` (§5.6). `externals` sorted by importCount desc then pkg asc.
+6. Warnings use the `PipelineWarning` shape (§6.1): `stage: "imports"`, stable `code`,
+   message without stacks, sanitized repo-relative `path`. Never throw for content
+   reasons; per-file try/catch → `imports-file-error` warning.
 
 ## Acceptance Criteria
 
 - [ ] mini-express-app: edges include `src/server.ts → src/routes/users.ts`, `src/routes/users.ts → src/services/userService.ts`, `src/services/userService.ts → src/db/repo.ts`; externals include `express` with count ≥ 1; `node` builtin grouping asserted.
-- [ ] No duplicate edges when a file imports the same target twice (type + value import).
-- [ ] A planted `import(dynamicVar)` yields `imports-dynamic-unresolved` and no edge.
-- [ ] js-lib with `require("./lib/parse")` produces `index.js → lib/parse.js`.
-- [ ] Deep import `express/lib/router` (planted snippet) counts as `express`.
+- [ ] `export { x } from "./x"` and `export * from "./y"` snippets each produce the expected edge.
+- [ ] No duplicate edges when a file imports the same target twice (type + value import); `importCount` still counts both occurrences.
+- [ ] A planted `import(dynamicVar)` yields `imports-dynamic-unresolved` and no edge; a planted `import "./style.css"` yields nothing (no edge/external/warning); a planted `import "./missing"` yields `imports-unresolved`; a per-file throw seam yields `imports-file-error` with `stage: "imports"` and a sanitized path.
+- [ ] js-lib with `require("./lib/parse")` produces `index.js → lib/parse.js`; a literal `import("./lib/format.js")` produces its edge.
+- [ ] Deep imports `express/lib/router` and `@scope/pkg/sub` (planted snippets) count as `express` and `@scope/pkg`.
+- [ ] `ts: null` input returns empty results without warnings.
 
 ## Validation
 

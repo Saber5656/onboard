@@ -26,20 +26,28 @@ guesswork from all 40 downstream issues.
 
 ## Detailed Requirements
 
-1. Dependency versions per DESIGN §3 (majors as of 2026-07): typescript `^7.0` (devDep; if `tsc` v7 breaks eslint/vitest integration, fall back to `~5.9` and record the fallback in the PR description — KU-2), vitest `^4`, eslint `^9`, prettier `^3`, preact `^10`, vite `^8`. No runtime deps yet beyond commander/zod placeholders — do **not** add any dependency not listed in DESIGN §3.
-2. Scripts (root): `build` (viewer build then `tsc -b` for onboard), `test` (`pnpm -r test`), `lint`, `typecheck`, `format`. Scripts (onboard): `build`, `test`, `dev` (`tsx src/cli/main.ts` or `node --watch` equivalent). Scripts (viewer): `build`, `test`.
-3. Viewer Vite config: `build.rollupOptions.output.format = "iife"`, single chunk (no code splitting), `outDir: "../onboard/assets/viewer"`, `emptyOutDir: true`, no hashed filenames (`app.js`, `app.css` exact — the emitter references them literally).
-4. `.gitignore`: `node_modules/`, `dist/`, `packages/onboard/assets/viewer/`, `.onboard/`, `coverage/`.
-5. ESLint: enable `no-restricted-syntax` skeleton (rules filled by later issues), forbid `any` escalation defaults off (keep default recommended sets; strictness increases later, not here).
-6. pnpm version pinned via `packageManager` field (current pnpm 9/10 line at implementation time).
+1. Dependency versions per DESIGN §3 (majors as of 2026-07): typescript `^7.0` (devDep; if `tsc` v7 breaks eslint/vitest integration, fall back to `~5.9` and record the fallback in the PR description — KU-2), vitest `^4`, eslint `^9`, prettier `^3`, preact `^10`, vite `^8`, tsx `^4` (dev script only). No runtime deps yet beyond commander/zod placeholders — do **not** add any dependency not listed in DESIGN §3.
+2. `pnpm-lock.yaml` is generated and **committed**; CI activates pnpm via corepack (`packageManager` field) and installs with `pnpm install --frozen-lockfile`.
+3. Scripts (root): `build` (viewer build first, then `tsc -b` for onboard — ordered, not `pnpm -r build`), `test` (`pnpm -r test`), `lint`, `typecheck`, `format`. Scripts (onboard): `build`, `test`, `dev` (`tsx src/cli/main.ts`). Scripts (viewer): `build`, `test`. CI runs the root `build` script so ordering is deterministic.
+4. Viewer Vite config — exact settings (default app builds do not emit these filenames):
+   `build.rollupOptions.input = "src/main.ts"` (or the entry html-less equivalent),
+   `build.rollupOptions.output = { format: "iife", entryFileNames: "app.js", assetFileNames: "app.css" }`,
+   `build.rollupOptions.output.inlineDynamicImports = true` (single chunk, no code splitting),
+   `build.cssCodeSplit = false`, `outDir: "../onboard/assets/viewer"`, `emptyOutDir: true`.
+   Acceptance asserts the exact output filenames.
+5. `.gitignore`: `node_modules/`, `dist/`, `packages/onboard/assets/viewer/`, `.onboard/`, `coverage/` (the lockfile is NOT ignored).
+6. ESLint: enable an empty `no-restricted-syntax`/`no-restricted-imports` skeleton with comments naming the issues that fill it (09: no child_process/eval in analyzers; 29: `dangerouslySetInnerHTML` only in audited sinks; 36: repo-wide finalization). Keep default recommended sets otherwise.
+7. pnpm version pinned via `packageManager` field (current pnpm line at implementation time).
+8. Placeholder CLI output format: `main.ts` reads its own package.json `version` and prints exactly `onboard <version>` (e.g. `onboard 0.0.0`) to stdout, exit 0.
+9. Directory creation scope: this issue creates only the paths listed in Scope. The full DESIGN §2.4 tree is built up by later issues — do not pre-create empty directories.
 
 ## Acceptance Criteria
 
-- [ ] `pnpm install && pnpm build && pnpm test && pnpm lint && pnpm typecheck` all succeed from a clean clone.
-- [ ] `node packages/onboard/dist/cli/main.js` prints a version string and exits 0.
-- [ ] `packages/onboard/assets/viewer/app.js` exists after build and contains an IIFE (starts with `(function` or `!function` or `(() =>` — assert no `import ` statement at top level).
-- [ ] CI workflow runs the same five commands on Node 22 and 24.
-- [ ] Repository layout matches DESIGN §2.4 for every directory this issue creates.
+- [ ] `pnpm install --frozen-lockfile && pnpm build && pnpm test && pnpm lint && pnpm typecheck` all succeed from a clean clone; `git ls-files pnpm-lock.yaml` shows the lockfile is committed.
+- [ ] `node packages/onboard/dist/cli/main.js` prints exactly `onboard <version>` (version from package.json) and exits 0.
+- [ ] `packages/onboard/assets/viewer/app.js` and `app.css` exist after build with those exact names; `app.js` contains an IIFE (assert no top-level `import ` statement).
+- [ ] CI workflow runs the same commands (with `--frozen-lockfile`) on Node 22 and 24.
+- [ ] Every path this issue creates matches its DESIGN §2.4 location.
 
 ## Validation
 

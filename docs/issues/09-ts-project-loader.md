@@ -21,39 +21,49 @@ loaded project. The guards are the KU-3 mitigation; the never-execute rule is th
 
 ## Detailed Requirements
 
-1. Discovery order: `<root>/tsconfig.json`, then `<root>/src/tsconfig.json`; when
-   `manifest.workspaces` is non-empty and no root tsconfig exists, still only these two
-   locations (per-package projects are v2) — record `ts-workspace-shallow` warning when
-   workspaces exist.
-2. Load with ts-morph:
-   `new Project({ tsConfigFilePath, skipAddingFilesFromTsConfig: false })`. Catch config
-   parse errors → warning `ts-tsconfig-invalid`, fall through to synthesis.
-3. Synthesis path (no/invalid tsconfig): `new Project({ useInMemoryFileSystem: false, compilerOptions: { allowJs: true, checkJs: false, module: NodeNext, moduleResolution: NodeNext, target: ES2022, jsx: "react-jsx", noEmit: true } })`, then `addSourceFileAtPath` for every FileNode with lang ∈ {ts, tsx, js, jsx, mts, cts, mjs, cjs} (paths from 06 — already exclusion-filtered; never re-walk the disk).
-4. Guards **before** loading (evaluate on FileNode set): TS/JS-family file count > 8000
-   or summed size > 128 MB → return `ts: null` + warning `ts-repo-too-large` (message
-   includes both numbers and the config knobs). After loading, `project.getSourceFiles().length`
-   is recorded as `sourceFileCount`.
-5. Files listed in tsconfig but excluded by fs-scan (sensitive/oversize) must be removed
-   from the project after load (`project.removeSourceFile`) so later stages cannot read
-   them — assert in tests with a planted `.env`-adjacent ts file? (sensitive matcher is
-   name-based; plant `src/secrets.yaml`-style file is not TS — instead plant an
-   oversized `src/generated.ts` and assert removal).
+1. Zero TS/JS-family FileNodes → return `ts: null` + warning `ts-no-sources`
+   immediately (before any loading; distinct code from the size guard).
+2. Discovery order: `<root>/tsconfig.json`, then `<root>/src/tsconfig.json` — only these
+   two locations in v1 (per-package projects are v2; the workspace-related warning is
+   emitted by the pipeline, issue 16, which has manifest access).
+3. **File admission is always explicit — ts-morph must never auto-add files.** Both
+   paths construct `new Project({ compilerOptions, skipAddingFilesFromTsConfig: true })`
+   and then `addSourceFileAtPath(safeJoin(root, node.path))` for exactly the FileNodes
+   with lang ∈ {ts, tsx, js, jsx, mts, cts, mjs, cjs} **and** `sha256 !== ""` (fs-scan
+   fully read them — sensitive/oversized/minified files are therefore never touched by
+   the compiler; §6.2, §11.2 T1/T2). With a valid tsconfig, `compilerOptions` come from
+   it (parse via ts-morph/TS config APIs — options only, file lists ignored);
+   tsconfig parse failure → warning `ts-tsconfig-invalid`, fall through to synthesis
+   defaults with `tsconfigPath: null`.
+4. Synthesis defaults (no/invalid tsconfig): `{ allowJs: true, checkJs: false,
+   module: NodeNext, moduleResolution: NodeNext, target: ES2022, jsx: "react-jsx",
+   noEmit: true }`.
+5. Guards **before** loading (evaluated on the admissible FileNode set), with an
+   options parameter for tests: `loadTsProject(root, files, config, logger, options?)`
+   where `options = { tsFileCap?: number (default 8000), tsByteCap?: number (default
+   128 * 1024 * 1024) }` — count > cap or summed size > cap → `ts: null` + warning
+   `ts-repo-too-large` (message includes both numbers and both caps). After loading,
+   `project.getSourceFiles().length` is recorded as `sourceFileCount`.
 6. Never call any API that evaluates user code (`import()`, `require`, `eval`,
-   `child_process` on repo content). Lint guard: this directory gets an ESLint
-   `no-restricted-imports`/`no-restricted-syntax` block for `child_process`, `eval`,
-   dynamic `import(` of computed paths (added here, enforced repo-wide later by 36).
-7. Return the live `Project` instance inside `TsAnalysis` (in-memory only; the model
-   schema for RepoModel.ts stores derived data, not the project — coordinate with §5.2:
-   `RepoModel.ts` field carries `{ sourceFileCount, tsconfigPath }` when serialized).
+   `child_process` on repo content). Lint guard added in the root `eslint.config.js`
+   as an override for `packages/onboard/src/analyze/**`: `no-restricted-imports` for
+   `child_process`/`node:child_process` (exception: `analyze/git` — its own override),
+   `no-eval`, and `no-restricted-syntax` selectors `CallExpression[callee.name='eval']`
+   and `NewExpression[callee.name='Function']` (repo-wide finalization in 36).
+7. `TsAnalysis` carries the live `Project` (in-memory only) plus `sourceFileCount` and
+   `tsconfigPath` — the latter **repo-relative POSIX** (`"tsconfig.json"` or
+   `"src/tsconfig.json"`) or null; absolute paths never leave the module (§5.1, §11.9).
+   The serialized `RepoModel.ts` field carries only `{ sourceFileCount, tsconfigPath }`.
 
 ## Acceptance Criteria
 
-- [ ] mini-express-app: loads via its committed tsconfig; `tsconfigPath` ends with `tsconfig.json`; sourceFileCount ≥ 10.
-- [ ] js-lib: synthesized project (`tsconfigPath: null`) with all `.js` files added; `getSourceFile("index.js")` resolves.
-- [ ] plain-docs (zero TS/JS files): returns `ts: null` + warning `ts-no-sources` (assert this exact code — it is distinct from `ts-repo-too-large`).
-- [ ] Guard test: config-lowered cap (test-only override, e.g. 3 files) on mini-express-app → `ts: null` + `ts-repo-too-large`.
-- [ ] Oversized `src/generated.ts` (planted > maxFileSizeKB) is absent from `project.getSourceFiles()` after load.
-- [ ] ESLint restriction block exists and `pnpm lint` passes.
+- [ ] mini-express-app: loads via its committed tsconfig; `tsconfigPath === "tsconfig.json"` (repo-relative); sourceFileCount ≥ 10.
+- [ ] js-lib: synthesized project (`tsconfigPath: null`) with all `.js` files added; `getSourceFile` resolves `index.js`.
+- [ ] plain-docs (zero TS/JS files): returns `ts: null` + warning `ts-no-sources` (assert this exact code — distinct from `ts-repo-too-large`).
+- [ ] Malformed `tsconfig.json` (planted): warning `ts-tsconfig-invalid`, `tsconfigPath: null`, sources still loaded via synthesis defaults.
+- [ ] Guard test: `options.tsFileCap = 3` on mini-express-app → `ts: null` + `ts-repo-too-large` with both numbers in the message.
+- [ ] Exclusion proof: an oversized `src/generated.ts` (planted > maxFileSizeKB, containing a unique canary string) is never admitted — `getSourceFile` returns undefined for it **and** no loaded source text contains the canary (proves it was never read by the compiler, not merely removed after).
+- [ ] ESLint restriction block exists (planted `child_process` import in `analyze/ts/` fails lint — documented spot-check) and `pnpm lint` passes.
 
 ## Validation
 

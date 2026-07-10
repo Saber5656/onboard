@@ -16,31 +16,40 @@ folding matters more than cleverness.
 
 ## Scope
 
-- `src/analyze/modules/index.ts` — `mapModules({ files, manifest, edges, entryPoints }, logger) → { modules: ModuleInfo[], warnings }`.
+- `src/analyze/modules/index.ts` — `mapModules({ files, manifest, edges, entryPoints, symbols }, logger) → { modules: ModuleInfo[], warnings }`.
 - `src/analyze/modules/roles.ts` — role table + classifier.
 - Unit tests on fixtures.
 
 ## Detailed Requirements
 
 1. Candidates: depth-1 directories under root; depth-2 directories under root and under
-   `src/`; plus workspace package roots (`manifest.workspaces` glob-expanded against
-   directories present in files). Files directly in root belong to module `"."`.
-2. Folding rules (§6.5 item 2): candidate with < 3 files merges into parent; a parent and
-   child both survive only when the child has ≥ 8 files; after folding, if module count
-   > 30, iteratively merge the smallest depth-2 modules into parents until ≤ 30
-   (warning `modules-folded`).
-3. Role classification: apply the §6.5 dir-name table on the module's basename
-   (case-insensitive, exact match against the listed names); else `entry` when the
-   module contains an EntryPoint file; else `unknown`.
-4. Metrics: `fileCount`; `loc` = sum of line counts of read files (binary/oversized count
-   0); module-level `fanIn`/`fanOut` = count of distinct other-modules with file edges
+   `src/`; plus workspace package roots — expanded by matching `manifest.workspaces`
+   glob patterns against the **directory-prefix set derived from sanitized
+   `FileNode.path` values only** (no filesystem walk, no symlink resolution, results
+   sorted byte-order). Files directly in root belong to module `"."`.
+2. File→module assignment uses **segment-boundary matching**: a file belongs to
+   candidate `m` iff `path === m` is impossible (files ≠ dirs) so:
+   `path.startsWith(m + "/")`; among matches take the deepest; no match → `"."`
+   (prevents `src/app` claiming `src/application/x.ts`).
+3. Folding rules (§6.5 item 2), evaluated on **assigned file counts** bottom-up
+   (deepest candidates first): a candidate with < 3 assigned files merges its files
+   into its parent candidate (or `"."`); a surviving parent and child both remain only
+   when the child has ≥ 8 assigned files (else child merges up). After folding, if
+   module count > 30, iteratively merge the smallest surviving depth-2 module —
+   "smallest" = (fileCount asc, loc asc, path byte-order asc) — into its parent until
+   ≤ 30 (warning `modules-folded`).
+4. Role classification: apply the §6.5 dir-name table on the module's basename
+   (case-insensitive, exact match against the listed names — the table includes `util`);
+   else `entry` when the module contains an EntryPoint file; else `unknown`.
+5. Metrics: `fileCount` (assigned files); `loc` = Σ `FileNode.lineCount ?? 0` over
+   assigned files (issue 06 provides lineCount; never re-read content here);
+   module-level `fanIn`/`fanOut` = count of distinct other-modules with file edges
    into/out of this module; `topSymbols` = up to 5 exported symbol names from files in
    the module, ranked by their file's fanIn (file-level incoming edge count), tie
-   (file, startLine) — requires symbols input: **add `symbols` to the function inputs**
-   (coordinate signature with issue 10 output).
-5. `ModuleInfo.id` = `"m" + short8(sha256(path))`; output sorted by path byte order.
-6. Every file maps to exactly one module (the deepest surviving module whose path
-   prefixes it; root files → `"."`) — invariant asserted in tests.
+   (file, startLine).
+6. `ModuleInfo.id` = `"m" + short8(sha256(path))`; output sorted by path byte order.
+7. Partition invariant: every file maps to exactly one surviving module — asserted in
+   tests (sum of fileCounts = total files; no overlaps).
 
 ## Acceptance Criteria
 
@@ -48,7 +57,8 @@ folding matters more than cleverness.
 - [ ] fanIn/fanOut: `src/db` has fanIn ≥ 1 (from services) and fanOut 0 among project modules.
 - [ ] topSymbols for `src/services` includes the userService exports, ≤ 5 names.
 - [ ] Partition invariant: sum of module fileCounts = total analyzed files; no file in two modules (property test over all fixtures).
-- [ ] plain-docs: applying the folding rules yields module `docs` (role docs) plus root module `"."` (role unknown — the root matches no dir-name rule). Freeze the resulting structure in the test with a comment citing §6.5; if folding merges `docs` into `"."` (< 3 files), freeze that outcome instead and note it.
+- [ ] plain-docs: `docs/` has 2 assigned files (< 3) so it merges up — the deterministic result is exactly one module `"."` with fileCount 4, role `unknown`; assert precisely this (comment cites the §6.5 fold rule).
+- [ ] Segment-boundary test: `src/app/x.ts` vs `src/application/y.ts` snippet partition never cross-assigns; parent/child boundary tests at 2/3 and 7/8 assigned files freeze the fold outcomes.
 
 ## Validation
 
@@ -58,7 +68,7 @@ tree.
 
 ## Dependencies
 
-06, 07, 11, 12 (+ symbols from 10 for topSymbols).
+06, 07, 10 (symbols for topSymbols), 11, 12.
 
 ## Non-goals
 

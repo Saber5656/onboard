@@ -27,31 +27,40 @@ output, ever.
    `git: null` + warning `git-unavailable`. `--no-git` flag short-circuits before this
    stage (pipeline concern, issue 16).
 2. Commands (all with `cwd=root`, env `GIT_CONFIG_GLOBAL=/dev/null`,
-   `GIT_CONFIG_SYSTEM=/dev/null`, `LC_ALL=C`):
-   - `git rev-parse HEAD` → headCommit (no commits yet → `git: null` + `git-empty`).
-   - `git status --porcelain` → `dirty` = non-empty output.
-   - `git log --no-merges --name-only --format=%H%x00%cI%x00%aE -n 5000 -- .`
-   - `git show -s --format=%cI HEAD` → headCommitterDateIso (normalize to UTC `Z`).
-2. Parse defensively: entries are separated by the `%H%x00%cI%x00%aE` header lines;
-   file lines until next header. Non-UTF8 / quoted paths (`core.quotepath`) — run with
-   `-c core.quotepath=false`. Skip files not present in the current FileNode set.
-3. Per-file aggregation: `commits` count, `lastTouchedIso` (max committer date, UTC),
+   `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C`; every invocation
+   prefixed `git -c core.quotepath=false -c core.fsmonitor=false -c core.hooksPath=/dev/null --no-pager`
+   — the analyzed repo is untrusted (§11.2 T1): no prompts, hooks, pagers, or fsmonitor.
+   Per-command timeout 30 s and stdout cap 64 MB; breach → `git: null` + warning
+   `git-command-failed`):
+   - `… rev-parse HEAD` → headCommit (no commits yet → `git: null` + `git-empty`).
+   - `… status --porcelain` → `dirty` = non-empty output.
+   - `… log --no-merges --name-only --format=%H%x00%cI%x00%aE -n 5000 -- .`
+   - `… show -s --format=%cI HEAD` → headCommitterDateIso (normalize to UTC `Z`).
+3. Parse defensively: stdout decoded as UTF-8 with lossy replacement; entries are
+   separated by the `%H%x00%cI%x00%aE` header lines; file lines until next header.
+   Each git-reported path is normalized with the **same** rules as fs-scan output
+   (repo-relative POSIX, NFC, control-char strip) before FileNode set membership checks
+   and before appearing in any output. Skip files not present in the FileNode set.
+4. Per-file aggregation: `commits` count, `lastTouchedIso` (max committer date, UTC),
    `commitDatesIso` (all committer dates for the file, UTC, sorted desc, capped at 50 —
    hotspot scoring input, §7.4), `contributorCount` = size of the set of
-   `sha256(authorEmail)` — the raw email string must not outlive the parsing function
-   (assert via code review; no email substring in any output or log).
-4. Co-change: consider only commits touching ≤ 20 analyzed files; for each unordered pair
+   `sha256(authorEmail)`. Identity rule (enforceable form): raw author emails/names must
+   never be stored in returned objects, warnings, error messages, logs, or module state —
+   hash immediately during parsing and keep only hashes for set counting.
+   Output ordering: `perFile` sorted by `path` byte order; `commitDatesIso` sorted desc.
+5. Co-change: consider only commits touching ≤ 20 analyzed files; for each unordered pair
    increment count; keep pairs `count ≥ 4` and `lift > 2.0`
    (`lift = (pairCount · totalCommits) / (commitsA · commitsB)`); sort by count desc,
    tie lexicographic `(a,b)`; cap 200 (`git-cochange-capped` warning when hit).
-5. `commitsAnalyzed` = parsed commit count; when it equals the 5000 cap, warn `git-log-capped`.
-6. Determinism: identical materialized fixture ⇒ byte-identical serialized GitStats.
+6. `commitsAnalyzed` = parsed commit count; when it equals the 5000 cap, warn `git-log-capped`.
+7. Determinism: identical materialized fixture ⇒ byte-identical serialized GitStats.
 
 ## Acceptance Criteria
 
-- [ ] mini-express-app (12 scripted commits): `userService.ts` has the max `commits` (≥ 5) and its `commitDatesIso` matches the scripted dates (desc order); pair (`services/userService.ts`, `db/repo.ts`) present with count ≥ 4 and lift > 2; headCommitterDateIso equals the last scripted commit date.
+- [ ] mini-express-app (12 scripted commits): `src/services/userService.ts` has the max `commits` (= 5) with `commitDatesIso` matching the scripted dates (desc) and `contributorCount` = 2 (two scripted authors, issue 05); pair (`src/db/repo.ts`, `src/services/userService.ts`) present with count = 4 and lift = 2.4; headCommitterDateIso equals the last scripted commit date.
 - [ ] `dirty` false after clean materialization; true after the test touches a file (no commit).
-- [ ] No output string or thrown message contains `fixture@example.com` (grep over serialized GitStats + captured logs).
+- [ ] Privacy sweep: serialized GitStats, all warnings, and captured logs contain none of `fixture@example.com`, `fixture2@example.com`, `Fixture Bot` (grep assertions).
+- [ ] Parser-level cap tests (constructed log text, no real repo): exactly 5000 entries → `git-log-capped`; > 200 qualifying pairs → `git-cochange-capped` + truncation to 200.
 - [ ] Repo with zero commits (init only) → `git: null` + `git-empty`.
 - [ ] Two materializations → identical GitStats JSON (stableStringify equality).
 

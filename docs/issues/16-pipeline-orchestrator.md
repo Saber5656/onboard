@@ -27,7 +27,10 @@ emission (17–27) consume its output.
 1. Stage order and data flow exactly as DESIGN §2.1/§2.2: fsscan → (manifest ∥ git ∥
    ts-loader) → (symbols ∥ imports) → entries → modules → flow-resolve/select. `--no-git`
    skips the git stage entirely (availability reason "requires git history",
-   distinguishable code `no-git-flag` vs `git-unavailable`).
+   distinguishable code `no-git-flag` vs `git-unavailable`). The pipeline (which has
+   both manifest and ts outputs) emits warning `ts-workspace-shallow` when
+   `manifest.workspaces` is non-empty and TS analysis loaded from a root tsconfig
+   (moved here from issue 09 — the loader has no manifest access).
 2. Stage contract enforcement: each stage runs inside a wrapper that (a) times it,
    (b) catches non-`StageFatal` throws and converts them to warning
    `pipeline-stage-error` + documented degraded output (the §6.1 matrix row), (c) merges

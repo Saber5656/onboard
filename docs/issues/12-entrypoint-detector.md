@@ -26,35 +26,54 @@ strings appear verbatim in tour narration, so they must be precise and readable.
    +25, listen/serve/createServer call +20, framework config +20, conventional filename
    +10, CLI framework usage +15). A candidate accumulates scores from multiple signals.
 2. Signal extraction details:
-   - `scripts.start`/`scripts.dev` parsing: tokenize the command; the file argument is
-     the first token ending in `.ts/.js/.mjs/.cjs/.tsx` after stripping runner prefixes
-     (`node`, `tsx`, `ts-node`, `nodemon`, `bun`); flag-shaped tokens (`-*`) skipped.
+   - `scripts.start`/`scripts.dev` parsing — deterministic tokenizer subset: split on
+     whitespace honoring single/double quotes; drop leading `VAR=value` env
+     assignments; skip runner/manager tokens (`node tsx ts-node nodemon bun pnpm npm
+     yarn npx bunx exec run dev`) and flag-shaped tokens (`-*`, plus the value token
+     after `--exec`); the file argument is the first remaining token ending in
+     `.ts/.tsx/.js/.mjs/.cjs`. No match (shell operators `&&`, subshells, unknown
+     forms) → no signal from this source.
    - listen-signal: scan ts-morph call expressions for property-access calls named
-     `listen`, or identifier calls `serve`/`createServer` — in any project file; that
-     file becomes a candidate.
+     `listen`, or identifier calls `serve`/`createServer` — only in files with
+     `isTest: false` and `lang !== null` (never tests/binaries); that file becomes a
+     candidate.
    - framework configs: existence of `next.config.*`, `nuxt.config.*`, `astro.config.*`
-     → candidate file = the config file itself, kind `web-app`, and set
-     `flowEligible: false` (framework internals are not traceable in v1 — this field
-     lives on EntryPoint; add to model if absent, coordinate §5.2).
-   - CLI framework: file imports `commander`/`yargs` **and** contains a `.parse(` call.
-3. Kind assignment precedence when multiple signals hit one file:
+     → candidate file = the config file itself, kind `web-app`,
+     `flowEligible: false` (§5.2 field; framework internals are not traceable in v1).
+   - CLI framework: file has an import declaration for `commander` or `yargs` (scan
+     ts-morph import declarations directly — issue 11's aggregated externals are not
+     per-file) **and** contains a `.parse(` call. `isTest` files excluded.
+3. All detected entries have `flowEligible: true` except framework configs (false).
+   Kind assignment precedence when multiple signals hit one file:
    bin > server > web-app > lib.
-4. `symbol`: exported function invoked in a top-level statement of the candidate file
-   (e.g. `main()` / `void main()` / `main().catch(...)`); else null.
-5. Config override: when `config.entryPoints` non-empty, skip detection; validate files
-   exist (03 already validated) and emit evidence `["configured entry point"]`,
-   score 100, `flowEligible: true`.
-6. Output: dedupe by file (merge evidence, sum scores per rule table — each signal type
+4. Evidence strings are built from **fixed labels + normalized repo-relative paths
+   only** — never raw script text or manifest values (§11.3; they render verbatim in
+   narration). Canonical forms (exact): `package.json bin "<name>"`,
+   `package.json main/exports target`, `scripts.<name> runs <path>`,
+   `calls .listen()/serve()/createServer()`, `framework config <basename>`,
+   `conventional filename`, `CLI framework usage (commander|yargs)`,
+   `configured entry point`. All evidence strings pass `stripControlChars`.
+5. `symbol` detection — exact patterns over the candidate file's top-level statements:
+   an expression statement of form `f()`, `void f()`, `f().catch(…)`, or `await f()`
+   where `f` is an identifier bound to a function/const declaration **exported from the
+   same file**; take the first match in source order; `export default function name()`
+   also qualifies (symbol = its name). Anything else → null.
+6. Config override: when `config.entryPoints` non-empty, skip detection; files already
+   validated by 03; evidence `["configured entry point"]`, score 100,
+   `flowEligible: true`, kind from config.
+7. Output: dedupe by file (merge evidence, sum scores per rule table — each signal type
    counts once per file); sort score desc, tie path asc; slice `flow.maxEntries`
    (default 3); dropped candidates → warning `entries-dropped` with count.
-7. Zero candidates: return empty array + warning `entries-none` (entry-flow tour becomes
-   unavailable via §6.1 — pipeline concern).
+8. Zero candidates: return empty array + warning `entries-none` — the pipeline (16)
+   maps this to the §6.1 row "no traceable entry points".
 
 ## Acceptance Criteria
 
-- [ ] mini-express-app: `src/server.ts` is the top entry with evidence containing both the listen signal and the scripts.dev parse; kind `server`.
-- [ ] Planted `bin` field (`{"cli": "./src/cli.ts"}`) in a test copy outranks the server file (bin 50 > server signals when isolated) — assert ordering.
+- [ ] mini-express-app: `src/server.ts` is the top entry with evidence containing both the listen signal and the scripts.dev parse (exact canonical strings asserted); kind `server`; test files produce no candidates.
+- [ ] Score-table unit tests: one isolated fixture per signal type asserting its exact score contribution; a combined fixture (`bin` = 50 vs server file with scripts+listen+filename = 55) asserts the resulting order with hand-computed totals — the AC asserts exact scores, not just ranking.
+- [ ] Tokenizer table tests: quoted path, env-prefix (`NODE_ENV=x node src/a.ts`), `nodemon --exec tsx src/server.ts`, `pnpm tsx src/main.ts`, and an unsupported `a && b` form (no signal).
 - [ ] `next.config.js` fixture-let: candidate produced with kind `web-app` and `flowEligible: false`.
+- [ ] Symbol patterns: `main()`, `void main()`, `main().catch(e => …)` each detect exported `main`; non-exported or aliased callee → null.
 - [ ] Config override with `{ file: "src/routes/health.ts" }` yields exactly one EntryPoint with score 100 and skips detection (no listen-derived entries).
 - [ ] plain-docs: empty result + `entries-none`.
 

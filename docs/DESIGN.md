@@ -193,6 +193,7 @@ Decisions recorded in ADRs; versions are the current majors verified on 2026-07-
 | LLM providers | **No SDKs.** Hand-rolled `fetch` adapters: `anthropic`, `openai-compat` | — | ADR-003, §10.5 |
 | Tests | vitest (unit/component), Playwright (viewer smoke) | vitest ^4 | §14 |
 | Lint/format | eslint ^9 (typescript-eslint) + prettier ^3 | — | §14.6 |
+| Dev runner (dev script only, never a runtime dep) | tsx | ^4 | ADR-001 |
 
 Node engines: `>=20`. CI matrix: Node 22.x and 24.x (both LTS as of 2026-07).
 
@@ -331,6 +332,8 @@ interface RepoModel {
   files: FileNode[];                 // sorted by path (byte order)
   languages: { lang: string; files: number; bytes: number }[];
   manifest: ManifestInfo | null;     // §6.3 (root package.json et al.)
+  readme: { title: string | null; firstParagraph: string | null; badgeCount: number } | null;
+                                     // §6.3 — separate from manifest so no-package.json repos keep it
   ciWorkflows: CiWorkflow[];
   docsFiles: { path: string; kind: "readme"|"contributing"|"license"|"codeofconduct" }[];
   git: GitStats | null;              // null when --no-git or not a repo
@@ -345,8 +348,9 @@ interface FileNode {
   path: string;                      // relative POSIX
   size: number;                      // bytes
   lang: string | null;               // from extension map (§6.2); null = unknown/binary
+  lineCount: number | null;          // counted during the read pass; null when content was never read
   isTest: boolean;                   // path heuristics (§6.2)
-  sha256: string;
+  sha256: string;                    // "" (empty, documented sentinel) when content was never read (binary/oversized/minified)
 }
 
 interface GitStats {
@@ -372,7 +376,8 @@ type ModuleRole = "entry"|"http-api"|"ui"|"domain"|"data-access"|"infra"|"config
 interface EntryPoint {
   id: string; file: string; symbol: string | null;
   kind: "bin"|"server"|"web-app"|"lib";
-  evidence: string[];                // e.g. 'package.json bin "onboard"', 'calls app.listen'
+  flowEligible: boolean;             // false = not traceable in v1 (e.g. framework configs, §6.9)
+  evidence: string[];                // sanitized fixed labels + normalized paths only (§6.9)
   score: number;                     // §6.9 ranking
 }
 
@@ -474,7 +479,7 @@ Layouts are computed at generate time with deterministic algorithms so the viewe
 
 Normative rules (enforced by `util/stable-json.ts` and review):
 1. JSON serialization: recursively key-sorted, 2-space indent, `\n` line endings, trailing newline, every `<` escaped as `\u003c` (XSS-safe embedding, §11.5).
-2. Every array in output has a documented explicit sort (paths: byte order; symbols: (file, startLine); tours: fixed kind order architecture → entry-flow → hotspots → contributing; entry-flow tours by entryId).
+2. Every array in output has a documented explicit sort (paths: byte order; symbols: (file, startLine); tours: fixed kind order architecture → entry-flow → hotspots → contributing; entry-flow tours by entryId). "Byte order" is defined once, repo-wide: lexicographic comparison of the strings' UTF-8 byte sequences (implemented by one shared comparator in `util/`; note this differs from JS default UTF-16 ordering for some non-ASCII strings).
 3. Forbidden in generate/emit code paths: `Date.now()`, `new Date()` without argument, `Math.random()`, iteration over unsorted `Map`/`Set`/object keys into output, absolute paths, environment-dependent strings (hostname, username, locale-dependent formatting; always use `en-US`-invariant formatting helpers).
 4. `meta.generatedAt` = HEAD **committer date** (deterministic per commit). When the worktree is dirty or git is absent: field omitted, `meta.dirty: true`.
 5. Parallelism allowed only if results are collected then sorted before serialization.
@@ -505,6 +510,7 @@ Graceful degradation matrix (drives `meta.tourAvailability`):
 |---|---|
 | Not a git repo / `--no-git` | `git = null`; hotspots tour unavailable (`reason: "requires git history"`); architecture module ranking falls back to size+centrality |
 | No TS/JS sources | `ts = null`; entry-flow tour unavailable (`reason: "requires TS/JS analysis in v1"`) |
+| TS present but zero flow-eligible call paths (no entries detected, or all paths < 2 hops) | entry-flow tour unavailable (`reason: "no traceable entry points"`) |
 | No package.json | contributing tour degrades to generic steps (README/CI only); never unavailable |
 | < 5 analyzable files | generate succeeds with architecture tour only + prominent warning |
 | tsconfig unparsable | synthesize default program (§6.6) + warning |
@@ -528,13 +534,13 @@ Input: repo root. Output: `FileNode[]`, `languages`, `docsFiles`.
 - Framework/runner detection from dependency names table: next/nuxt/astro/vite/express/fastify/koa/nest/react/vue/svelte; vitest/jest/mocha/node:test; eslint/biome/prettier.
 - Other ecosystems shallow (name + kind only): `pyproject.toml`, `go.mod`, `Cargo.toml`, `Gemfile`, `pom.xml` → recorded so narration can say "also contains a Go module".
 - Node version from `engines.node` / `.nvmrc` / `.tool-versions`.
-- README: title (first `# h1`), first paragraph (plain text, ≤ 400 chars), badge count. CONTRIBUTING/LICENSE/CODE_OF_CONDUCT presence.
-- CI: `.github/workflows/*.yml` → name + `on:` triggers + job names (parse YAML; on parse failure record filename only + warning).
+- README: title (first `# h1`), first paragraph (plain text, ≤ 400 chars), badge count — stored on `RepoModel.readme`, independent of package.json presence. CONTRIBUTING/LICENSE/CODE_OF_CONDUCT presence comes from fs-scan `docsFiles` (§6.2), not re-detected here.
+- CI: `.github/workflows/*.yml` and `*.yaml` → name + `on:` triggers (scalar, list, and map forms) + job names (heuristic line-based extraction; on failure record filename only + warning).
 
 ### 6.4 Git history analyzer (`analyze/git/`)
 
 - Preconditions: `.git` exists and `git` binary available; else `git = null` + warning.
-- Command: `git log --no-merges --name-only --format=%H%x00%cI%x00%aE -n 5000 -- .` executed with `cwd = root` (cap 5000 commits; note in warnings when capped). Shallow clone: works with whatever is available; record `commitsAnalyzed`.
+- Command: `git -c core.quotepath=false -c core.fsmonitor=false -c core.hooksPath=/dev/null --no-pager log --no-merges --name-only --format=%H%x00%cI%x00%aE -n 5000 -- .` executed with `cwd = root`, env `GIT_TERMINAL_PROMPT=0` (cap 5000 commits; note in warnings when capped; the analyzed repo is untrusted input — no prompts, hooks, pagers, or fsmonitor may run: §11.2 T1). Shallow clone: works with whatever is available; record `commitsAnalyzed`.
 - Per file (only files present in current FileNode set): commit count, last touched date, committer dates (`commitDatesIso`, UTC, sorted desc, capped at 50 per file — hotspot scoring input §7.4), distinct author-email **count** (emails are hashed then discarded — identities never stored: §11.9).
 - Co-change: for commits touching ≤ 20 files, count unordered pairs; keep pairs with `count ≥ 4` and `lift > 2.0` where `lift = P(a∧b) / (P(a)·P(b))` over analyzed commits; cap output at 200 pairs by count desc, tie-break lexicographic.
 - `headCommit`, `dirty` (`git status --porcelain` non-empty), `headCommitterDateIso`.
@@ -545,7 +551,7 @@ Purpose: fold files into ≤ ~30 human-meaningful "modules" (directories).
 
 1. Candidate module roots: depth-1 and depth-2 directories under root and under `src/` (plus workspace package roots when manifest.workspaces present).
 2. Fold rule: a candidate with < 3 files merges into its parent; nested candidates both kept only if child has ≥ 8 files.
-3. Role classification: first match wins, by (a) exact/major dir-name table (`routes|api|controllers → http-api`, `components|pages|views|ui → ui`, `models|domain|core|services → domain`, `db|repositories|dao|prisma|migrations → data-access`, `infra|adapters|clients|queue → infra`, `config|settings → config`, `test|tests|__tests__|e2e → tests`, `docs|documentation → docs`, `scripts|tools|bin → scripts`, `utils|lib|shared|common → shared-utils`, `build|ci → build`), then (b) contains an entry point → `entry`, then (c) `unknown`.
+3. Role classification: first match wins, by (a) exact/major dir-name table (`routes|api|controllers → http-api`, `components|pages|views|ui → ui`, `models|domain|core|services → domain`, `db|repositories|dao|prisma|migrations → data-access`, `infra|adapters|clients|queue → infra`, `config|settings → config`, `test|tests|__tests__|e2e → tests`, `docs|documentation → docs`, `scripts|tools|bin → scripts`, `util|utils|lib|shared|common → shared-utils`, `build|ci → build`), then (b) contains an entry point → `entry`, then (c) `unknown`.
 4. Metrics: fileCount, loc (sum of read files' line counts), module-level fanIn/fanOut from file import edges (§6.8) aggregated, topSymbols = up to 5 exported symbols by fan-in of their file.
 
 ### 6.6 TS project loader (`analyze/ts/`)
@@ -561,7 +567,7 @@ For each source file: exported declarations only (functions, classes, consts of 
 
 ### 6.8 Import graph (`analyze/imports/`)
 
-- TS path: per source file, resolved module specifiers (static `import`/`export from`/`require` with literal specifiers) → in-repo file targets via ts-morph resolution. External imports recorded as package-name counts (for narration: "uses express, zod").
+- TS path: per source file, resolved module specifiers (static `import`/`export from`, plus `require("literal")` and `import("literal")` with string-literal arguments) → in-repo file targets via compiler resolution. External imports recorded as package-name counts (for narration: "uses express, zod").
 - Non-TS fallback (v1 minimal): none — non-TS files get no import edges; module fanIn/fanOut simply reflect TS/JS.
 - Dynamic `import(expr)` with non-literal `expr`: count + warning; not an edge.
 - Output: `edges: { from, to }[]` (file-level, deduped, sorted), aggregated to module level in §6.5.
@@ -891,7 +897,7 @@ No telemetry. No network I/O unless LLM explicitly configured (then: configured 
 
 - Error taxonomy: `UsageError` (→ exit 2), `AnalysisError` (→ 3), `SecretGateError` (→ 4), anything else → 1. Every thrown error carries `code` (kebab-case, stable, e.g. `config-unknown-key`, `port-in-use`, `secret-gate-blocked`) — codes are the CLI's machine contract, listed in `docs/` when they stabilize.
 - Logging: human logs → stderr (`info/warn/error`, `--verbose` adds `debug`, `--quiet` = errors only); machine output → stdout only with `--json` (single JSON document = run-report). Logger applies key-redaction filter (any env-key value appearing in a message → `***`).
-- `run-report.json`: `{ onboardVersion, startedAtIso?: omitted-when-dirty rules follow §5.6, stageTimingsMs, counts { files, symbols, edges, steps }, warnings[], tokenReport?, secretFindings (warn-level only), capsHit[] }`.
+- `run-report.json`: `{ onboardVersion, startedAtIso?: omitted-when-dirty rules follow §5.6, stageTimingsMs, counts { files, symbols, edges, steps }, warnings[], tokenReport?, secretFindings (warn-level only), capsHit[], error?: { code, message } }` — `error` present only when the run failed (the `--json` stream still emits the report in failure cases, except secret-gate blocks where no files are written but stdout still carries the report).
 
 ## 13. Performance & Limits (defaults table)
 
@@ -916,7 +922,7 @@ Targets (CI-checked loosely, informative): mini fixture (~30 files) generate < 5
 
 | Fixture | Purpose |
 |---|---|
-| `mini-express-app/` | TS server app (~25 files): entry detection, call paths, all four tours |
+| `mini-express-app/` | TS server app (exact file list in issue 05, ≈20 files): entry detection, call paths, all four tours |
 | `js-lib/` | plain JS, no tsconfig: synthesized program path |
 | `plain-docs/` | no code (md only): degradation matrix, architecture-only |
 | `hostile/` | XSS filenames (`<img src=x onerror=alert(1)>.ts`), fake `.env`+committed fake AWS key, symlink → outside, 2 MB file, minified blob, emoji/unicode path, CRLF file |

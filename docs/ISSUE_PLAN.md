@@ -32,7 +32,7 @@ source of truth for scope, ordering, and dependencies.
 | 10 | `issues/10-symbol-indexer.md` | Exported symbol indexer | 1 | 09 | §6.7 |
 | 11 | `issues/11-import-graph.md` | Import graph builder (file-level, resolved) | 1 | 09 | §6.8 |
 | 12 | `issues/12-entrypoint-detector.md` | Entry-point detector with evidence scoring | 1 | 07, 10, 11 | §6.9 |
-| 13 | `issues/13-module-mapper.md` | Module mapper: folding, roles, metrics | 1 | 06, 07, 11, 12 | §6.5 |
+| 13 | `issues/13-module-mapper.md` | Module mapper: folding, roles, metrics | 1 | 06, 07, 10, 11, 12 | §6.5 |
 | 14 | `issues/14-callpath-resolution.md` | Call-path tracer (1/2): call resolution engine | 1 | 10, 12 | §6.10 |
 | 15 | `issues/15-callpath-selection.md` | Call-path tracer (2/2): significance scoring and path selection | 1 | 14 | §6.10 |
 | 16 | `issues/16-pipeline-orchestrator.md` | Analysis pipeline orchestrator, warnings, degradation matrix | 1 | 06–15 | §6.1, §12, §13 |
@@ -72,7 +72,7 @@ flowchart TD
     I06 --> I07[07 manifest]; I06 --> I08[08 git]; I06 --> I09[09 ts-loader]
     I09 --> I10[10 symbols]; I09 --> I11[11 imports]
     I07 --> I12[12 entries]; I10 --> I12; I11 --> I12
-    I06 --> I13[13 modules]; I07 --> I13; I11 --> I13; I12 --> I13
+    I06 --> I13[13 modules]; I07 --> I13; I10 --> I13; I11 --> I13; I12 --> I13
     I10 --> I14[14 flow-resolve]; I12 --> I14; I14 --> I15[15 flow-select]
     I13 --> I16[16 pipeline]; I15 --> I16; I08 --> I16
     I16 --> I17[17 tour-framework]
