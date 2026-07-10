@@ -57,8 +57,12 @@ so a lower-capability agent can implement from recorded transcripts without live
 8. Mock adapter: constructor takes `{ script: Array<delta|usage|error|hangMs> }`;
    `name: "mock"` (interface `name` is `string` per §10.5); deterministic; exported for
    other issues' tests. It ships inside the package (tiny) but is unreachable from any
-   CLI path: the config `provider` enum has only the two real values (enforced by the
-   config schema; issue 37 later adds an env-gated, `NODE_ENV=test`-only seam for e2e).
+   CLI path: the config `provider` enum has only the two real values.
+9. E2E test seam (owned here because `createAdapter` is): when
+   `process.env.ONBOARD_TEST_MOCK_LLM === "1"` **and** `process.env.NODE_ENV === "test"`,
+   `createAdapter` returns the mock (scripted from a fixture) instead of a real
+   adapter; under any other NODE_ENV the variable is ignored entirely. Gate 37's
+   Playwright serve smoke uses this seam.
 
 ## Acceptance Criteria
 
@@ -71,6 +75,7 @@ so a lower-capability agent can implement from recorded transcripts without live
 - [ ] `createAdapter` protocol backstop: `file://` baseUrl → `config-baseurl-invalid`, no request attempted.
 - [ ] `openai-compat` against a baseUrl with trailing slash and without produce identical request paths (`…/chat/completions`).
 - [ ] Import-level test: no module in `src/llm/` imports from `"openai"` or `"@anthropic-ai/sdk"` (parse import specifiers — a plain grep would false-positive on `openai-compat.ts`), and package.json has neither dependency (ADR-008 guard).
+- [ ] Seam inertness: with `ONBOARD_TEST_MOCK_LLM=1` and `NODE_ENV=production` (and unset), `createAdapter` returns the real adapter; with `NODE_ENV=test` it returns the mock (three-way test).
 
 ## Validation
 
@@ -79,7 +84,7 @@ so a lower-capability agent can implement from recorded transcripts without live
 
 ## Dependencies
 
-03 (llm config shape), 04 (error taxonomy).
+02 (shared error classes in `util/errors.ts`), 03 (llm config shape).
 
 ## Non-goals
 

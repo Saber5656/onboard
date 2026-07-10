@@ -17,9 +17,22 @@ support.
 
 ## Scope
 
-- `packages/viewer/src/i18n/strings.ts` — typed UI string table (`en`, `ja`), exhaustive-key parity like issue 22 (compile-checked); keys for all chrome text (nav labels, buttons, hints, errors, chat placeholders for 35).
-- Locale plumbing: store field (28) + Header toggle; default from `bundle.meta.locale`; persisted `localStorage["onboard:locale"]`; the "narration is generated in <locale>" note shown when UI locale ≠ meta.locale.
-- Theme completion: `data-theme` variables audit across all components; `prefers-color-scheme` initial value when no stored preference; `prefers-reduced-motion` disables transitions.
+- `packages/viewer/src/i18n/strings.ts` — typed UI string table (`en`, `ja`),
+  exhaustive-key parity like issue 22 (compile-checked). Keys cover all chrome text
+  (nav labels, buttons, hints, errors, empty states) **and the complete chat key set
+  consumed by 35** (fixed here because 35 depends on this issue): `chat.placeholder`,
+  `chat.send`, `chat.stop`, `chat.truncated`, `chat.contextLabel`, `chat.tokensLine`,
+  `chat.sessionMeter`, `chat.budgetSpent`, `chat.disabledNoConfig`,
+  `chat.disabledNoApiKey`, `chat.errorGeneric`, `chat.hintServe`.
+- Locale plumbing: store field (28) + Header toggle; default from `bundle.meta.locale`;
+  persisted per-bundle as `localStorage["onboard:<configHash>:locale"]` (§9.2 —
+  precedence: stored override > meta.locale). The narration-language note is shown when
+  UI locale ≠ meta.locale, exact strings fixed here:
+  en `"Narration was generated in {locale}. Regenerate with --locale to change it."`,
+  ja `"ナレーションは{locale}で生成されています。変更するには --locale を付けて再生成してください。"`.
+- Theme completion: audit `data-theme` variable coverage across all components (the
+  tri-state auto/light/dark model itself ships in 28); `prefers-reduced-motion`
+  disables transitions.
 - A11y audit + fixes across 28–31 components per the checklist below.
 - Tests: string-table parity (type-level), locale toggle behavior, axe automated checks (vitest-axe) on the main views.
 
@@ -35,16 +48,23 @@ support.
    - focus moves to step heading on navigation (28's behavior — re-verify after 29);
    - landmarks: `banner` (Header), `nav` (TourList), `main` (StepView); skip-link to main;
    - `aria-current="step"`, popovers labelled, HelpOverlay is a labelled dialog with focus trap + Escape;
-   - contrast ≥ 4.5:1 for text in both themes (checked with a contrast script over the CSS variable palette — include the script in `packages/viewer/scripts/contrast-check.mjs`, run in CI test step);
-   - `prefers-reduced-motion: reduce` → no animated transitions (CSS media query).
+   - contrast ≥ 4.5:1 in both themes, checked by `packages/viewer/scripts/contrast-check.mjs`
+     over an **explicit token-pair list** (body text/background, muted text/background,
+     accent-on-background, focus ring vs adjacent surface, role label text on each role
+     tile fill, code foreground/background from the Shiki theme variables) — palette
+     pairs are the gate; rendered-component spot-checks go in the PR screenshots;
+   - `prefers-reduced-motion: reduce` → no animated transitions, validated by parsing
+     `app.css` for the media rule that zeroes transition durations (jsdom cannot
+     evaluate media-dependent computed styles; the behavioral check runs in 37's
+     Playwright smoke with reduced-motion emulation).
 4. No new dependencies except `vitest-axe` (dev).
 
 ## Acceptance Criteria
 
-- [ ] String tables: both locales implement every key (compile-time); toggling locale re-renders chrome in ja incl. the narration-language note; preference persists across reload (test with mocked storage).
-- [ ] vitest-axe: no violations of severity serious/critical on TourList, StepView (with fixture content), RepoMap, DepGraph, HelpOverlay.
-- [ ] Contrast script passes for both theme palettes (CI-executed).
-- [ ] Reduced-motion: transition durations are 0 under the media query (computed-style assertion).
+- [ ] String tables: both locales implement every key incl. the chat set (compile-time); toggling locale re-renders chrome in ja incl. the exact narration-language note; per-bundle preference persists across reload (mocked storage) and does not leak across different configHash values.
+- [ ] vitest-axe: zero violations with axe impact `serious`/`critical` on TourList, StepView (fixture content), RepoMap, DepGraph, HelpOverlay; lower-impact findings are triaged in the PR (fix or documented exception).
+- [ ] Contrast script passes for the enumerated token pairs in both themes (CI-executed).
+- [ ] Reduced-motion: `app.css` contains the parsed `prefers-reduced-motion` rule zeroing transitions (behavioral check deferred to 37).
 - [ ] Manual keyboard walkthrough (documented in PR): full tour navigation without a pointer.
 
 ## Validation

@@ -20,7 +20,7 @@ reported to the UI (35).
 
 - `src/chat/context.ts` — `buildContext(bundle, index, req) → { blocks, contextRefs }` (§10.4 query side via 26's `queryIndex`; boost current tourId/stepId docs ×1.3; assemble ≤ 12,000 chars: steps verbatim, symbols as signature lines, excerpts fenced with `path:start–end` headers).
 - `src/chat/prompt.ts` — system prompt verbatim §10.4 + `<context>`-delimited blocks + history (≤ 8) + question.
-- `src/chat/handler.ts` — the HTTP handler: guards (33) already ran; validate `X-Onboard-Token` (401), body zod schema (§10.3 shapes/limits → 400), body ≤ 64 KB (413), chat enabled (409), in-flight ≤ 2 (429 `busy`), session budget (429 `budget_exceeded`); stream SSE events exactly §10.3; wire real `sessionTokensUsed` into `/api/session` (33).
+- `src/chat/handler.ts` — the HTTP handler: guards (33) already ran; validate `Content-Type` is `application/json` (optionally with charset) → else 415; `X-Onboard-Token` (401); body via 33's `readLimitedJsonBody` (413) then zod schema (§10.3 shapes/limits → 400); chat enabled (409); 33's `StreamLimiter` (429 `busy`); session budget (429 `budget_exceeded`); stream SSE events exactly §10.3; wire real `sessionTokensUsed` into `/api/session` (33).
 - `src/chat/accounting.ts` — per-process counters (session totals, per-request usage from adapter `usage` items; estimator §8.5 fallback marked `estimated`).
 - Integration tests with the mock adapter (24).
 
@@ -29,30 +29,38 @@ reported to the UI (35).
 1. SSE mechanics: `Content-Type: text/event-stream`, `Cache-Control: no-store`,
    heartbeat comment every 15 s while waiting on the provider; events serialized as
    `event: <name>\ndata: <json>\n\n`; client abort (socket close) aborts the provider
-   call via AbortSignal; `error` event then stream end on provider failure (502 only
-   when failure precedes any SSE byte — after streaming starts, errors are in-band).
-2. `meta` event first, carrying `contextRefs` (§10.3) in retrieval-rank order.
-3. History validation: roles alternate ending with the new user question; violations →
-   400 `invalid-history`. History is included in the prompt but **not** re-retrieved
-   (context comes from the current question + position only — documented).
-4. Budget accounting: session total updates from provider-reported usage; the request
-   that crosses the cap completes, subsequent requests get 429 (§10.3 note in DESIGN:
-   "exceeded → 429" interpreted as: check before dispatch; in-flight completion allowed).
-   `usage` SSE event includes `sessionTotal`.
-5. Question length 1..2000 chars enforced by schema; answer `max_tokens` =
+   call via AbortSignal. Error boundary (§10.3): provider failure **before any SSE
+   byte is written** → 502 JSON; after any SSE byte (including after `meta`) → in-band
+   `error` event, then clean stream end.
+2. `meta` event first, carrying `contextRefs` (§10.3) as `{ type, id }` objects in
+   retrieval-rank order (types are exactly the four §10.4 doc types).
+3. Context boost mapping: `boostDocIds` = `step:<stepId>` plus `x:<excerptId>` of that
+   step when `stepId` present; when only `tourId` is present, all `step:` ids of that
+   tour. No other docs are boosted.
+4. History validation (`history` = prior turns, excluding the new question): empty, or
+   starts with `user`, strictly alternates, and ends with `assistant`; violations →
+   400 `invalid-history`. The prompt appends the current question as the final `user`
+   message. History is **not** re-retrieved (context comes from the current question +
+   position only — documented).
+5. Budget accounting: session total updates from provider-reported usage (the §8.5
+   estimator is used **internally only** when a provider omits usage — the `usage` SSE
+   event carries exactly the three §10.3 numeric fields, no `estimated` marker); the
+   check runs before dispatch, in-flight completion allowed; subsequent requests 429.
+6. Question length 1..2000 chars enforced by schema; answer `max_tokens` =
    `chat.maxOutputTokensPerAnswer`.
-6. No filesystem reads per request except the bundle loaded once at serve start
+7. No filesystem reads per request except the bundle loaded once at serve start
    (in-memory); no repo file access at chat time (token-optimization + T1 hygiene).
-7. Keys: adapter created once at serve start via 24; absence already surfaced by
+8. Keys: adapter created once at serve start via 24; absence already surfaced by
    `/api/session` (33) — handler double-checks and 409s with `no-api-key` reason.
 
 ## Acceptance Criteria
 
-- [ ] Happy path (mock adapter scripted): events arrive in order meta → deltas → usage → done; `contextRefs` non-empty for a mini-express-app question ("how are users created" — top ref is a userService symbol/step per 26's test); assembled context ≤ 12,000 chars (captured prompt assert).
-- [ ] Missing/wrong token → 401 before any SSE; bad Origin already 403 (33 regression); malformed body → 400; 3rd concurrent stream → 429 `busy`.
+- [ ] Happy path (mock adapter scripted): events arrive in order meta → deltas → usage → done; `contextRefs` are `{type, id}` objects, non-empty for a mini-express-app question ("how are users created" — a userService symbol/step ref appears within the top-3, matching 26's guarantee); assembled context ≤ 12,000 chars (captured prompt assert).
+- [ ] Missing/wrong token → 401 before any SSE; bad Origin already 403 (33 regression); `Content-Type: text/plain` → 415; malformed body → 400; bad history alternation → 400 `invalid-history`; 3rd concurrent stream → 429 `busy`.
+- [ ] Boost mapping: request with stepId boosts exactly that step + its excerpt (constructed near-tie flips — reuses 26's boost test pattern).
 - [ ] Session budget: cap set to fit one answer → second request 429 `budget_exceeded`; `/api/session` reflects the spent total.
 - [ ] Client disconnect mid-stream → provider AbortSignal fired within 100 ms (mock asserts).
-- [ ] Provider error before first delta → 502 JSON; after first delta → in-band `error` event and clean stream end; no unhandled rejections.
+- [ ] Provider error before any SSE byte → 502 JSON; after `meta` (before first delta) → in-band `error` event and clean stream end; no unhandled rejections.
 - [ ] Prompt snapshot test: system text + context delimiters + history layout frozen; injected repo content stays inside `<context>` blocks (assert a `"ignore previous instructions"` string in an excerpt lands only inside delimiters — T6 hygiene).
 
 ## Validation

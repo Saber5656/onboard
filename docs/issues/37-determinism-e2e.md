@@ -16,10 +16,11 @@ is proven by hashes, and the end-to-end path is proven by driving the real viewe
 
 ## Scope
 
-- `test/e2e/determinism.test.ts` — generate twice on materialized mini-express-app → sha256 equality of `tour-bundle.json` + every `site/` file.
+- `test/e2e/determinism.test.ts` — generate twice on materialized mini-express-app → compare **sorted manifests** of `{ relativePath, sha256, size }` covering `tour-bundle.json` + every `site/**` file (manifest comparison catches added/removed files, not just changed ones).
 - `test/e2e/golden.test.ts` + `test/golden/mini-express-app.bundle.json` — committed golden; `pnpm golden:update` script regenerates it (script prints a diff summary for PR review).
-- `test/e2e/selfhost.test.ts` — run the built CLI against the repo root: exit 0, bundle schema-valid, ≥ 3 tours available, warnings contain no `error`-level surprises (frozen allowlist of expected warnings).
-- `packages/viewer/test/e2e/smoke.spec.ts` (Playwright, chromium): (a) static: serve the emitted fixture site over a throwaway static server **and** load via `file://` — navigate all tours/steps, toggle theme+locale, assert zero console errors/CSP violations; (b) serve mode: launch `onboard serve` with a test-only hook injecting the mock adapter (see requirement 4), run one chat round-trip, assert token meter updates.
+- `test/e2e/selfhost.test.ts` — run the built CLI against the repo root: exit 0, bundle schema-valid, ≥ 3 tours available, `run-report.json` has no `error` field, and every `warnings[].code` is in a short frozen allowlist (≤ 5 codes, each justified by a comment).
+- `packages/viewer/test/e2e/smoke.spec.ts` (Playwright, chromium): (a) static: serve the emitted fixture site over a throwaway static server **and** load via `file://` — navigate all tours/steps, toggle theme+locale, assert zero console errors/CSP violations, and verify reduced-motion emulation disables transitions (32's behavioral check); (b) serve mode: launch `onboard serve` with `NODE_ENV=test ONBOARD_TEST_MOCK_LLM=1` (the seam owned by issue 24), run one chat round-trip, assert the token meter updates.
+- `pnpm test:e2e` umbrella script (runs determinism, golden check, selfhost, and the Playwright smoke; `pnpm golden:update` regenerates).
 - CI wiring for these jobs (consumed by 38).
 
 ## Detailed Requirements
@@ -31,13 +32,13 @@ is proven by hashes, and the end-to-end path is proven by driving the real viewe
    the committed file; the test fails with a readable unified-diff excerpt (first 40
    lines) when drift is unintentional. Golden file is the **bundle only** (site bytes
    covered by the double-run test; golden keeps review diffs human-scale).
-3. Self-host runs after `pnpm build` against the working tree (dirty allowed —
-   `generatedAt` omission path §5.6-4 gets exercised naturally in CI).
-4. Serve-mode smoke needs a mock LLM without violating the config enum (§24 non-goal):
-   add env-gated test seam `ONBOARD_TEST_MOCK_LLM=1` honored **only** when
-   `NODE_ENV=test` (implemented in this issue inside `createAdapter` with an explicit
-   comment + a security-suite assertion (36) that the seam is inert without
-   `NODE_ENV=test`; coordinate the one-line addition with 24's file).
+3. Self-host runs after `pnpm build` against the working tree. The `generatedAt`
+   omission path (§5.6-4) is exercised **deliberately**: copy mini-express-app to a
+   temp dir, dirty one file without committing, generate, and assert `generatedAt`
+   absent + `dirty: true` (CI checkouts are clean, so this cannot be left to chance).
+4. Serve-mode smoke uses the env-gated mock seam **owned by issue 24**
+   (`ONBOARD_TEST_MOCK_LLM=1`, honored only under `NODE_ENV=test`; 24's unit tests
+   prove inertness elsewhere — this issue only consumes it).
 5. Playwright: chromium only, headless, retained trace on failure (CI artifact);
    `file://` load uses `page.goto("file://…")` — module/CORS regressions surface here
    (ADR-004 guard).
@@ -47,11 +48,11 @@ is proven by hashes, and the end-to-end path is proven by driving the real viewe
 
 ## Acceptance Criteria
 
-- [ ] Determinism: two env-varied runs byte-identical (test demonstrably fails when a `Date.now()` is planted in the emitter — spot-check documented in PR, then reverted).
+- [ ] Determinism: two env-varied runs produce identical `{path, sha256, size}` manifests (test demonstrably fails when a `Date.now()` is planted in the emitter — spot-check documented in PR, then reverted).
 - [ ] Golden: committed, reviewed, and `golden:update` produces zero diff immediately after.
-- [ ] Self-host: green on CI; the expected-warnings allowlist is short (≤ 5 codes) and each is justified in a comment.
-- [ ] Playwright static smoke passes on `http://` and `file://`; serve smoke completes a chat round-trip with the seam adapter and the meter shows non-zero tokens.
-- [ ] All gates wired as CI jobs (names: `determinism`, `golden`, `selfhost`, `viewer-smoke`) — required-check flip happens in 38.
+- [ ] Self-host: green on CI with the frozen warning-code allowlist; dirty-worktree case asserts `generatedAt` omitted + `dirty: true`.
+- [ ] Playwright static smoke passes on `http://` and `file://` (incl. reduced-motion emulation check); serve smoke completes a chat round-trip via the 24 seam and the meter shows non-zero tokens.
+- [ ] `pnpm test:e2e` runs all of the above locally; all gates wired as CI jobs (names: `determinism`, `golden`, `selfhost`, `viewer-smoke`) — required-check flip happens in 38.
 
 ## Validation
 
@@ -59,7 +60,8 @@ CI run on the PR shows all four jobs green; local `pnpm test:e2e` reproduces.
 
 ## Dependencies
 
-27 (emitter), 32 (viewer complete), 33/34 (serve+chat for the serve smoke), 05 (fixture).
+27 (emitter), 32 (viewer complete), 35 (chat UI for the serve smoke — brings 33/34
+transitively), 24 (mock seam), 05 (fixture).
 
 ## Non-goals
 

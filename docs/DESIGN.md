@@ -705,7 +705,7 @@ Site payload size budget: warn at > 15 MB (huge repos → excerpt count already 
 - Preact SPA, single IIFE bundle (`vite build`, `rollupOptions.output.format: "iife"`, one chunk, no code-splitting), no external network requests ever (CSP enforces).
 - Boot: parse `#onboard-data` JSON (`JSON.parse`, never eval); `schemaVersion` check (§5.7).
 - Hand-rolled hash router: `#/tour/<tourId>/step/<n>`, `#/map`, `#/about`. Unknown hash → first tour step 0.
-- State: Preact context + `useReducer` (no external state lib). Persisted: `localStorage["onboard:<configHash>:progress"]` = `{ [tourId]: { lastStep, done } }`; `localStorage["onboard:theme"]` = `"light"|"dark"|"auto"`.
+- State: Preact context + `useReducer` (no external state lib). Persisted: `localStorage["onboard:<configHash>:progress"]` = `{ [tourId]: { lastStep, done } }`; `localStorage["onboard:theme"]` = `"light"|"dark"|"auto"`; `localStorage["onboard:<configHash>:locale"]` = UI locale override (per-bundle; precedence: stored override > `meta.locale`).
 - Serve-mode detection: on boot, `fetch("/api/session")` — 200 → chat enabled with returned token/budgets; any error/404 (incl. `file://`) → chat UI hidden with a subtle "chat available via `onboard serve`" hint (§10.2). The static HTML is byte-identical in both modes.
 
 ### 9.3 Components
@@ -743,7 +743,7 @@ Keyboard: `←/→` or `j/k` = prev/next step; `g` then `t` = tour list; `?` = h
 ### 10.2 Session protocol
 
 - On start, server generates `token = base64url(crypto.randomBytes(32))` (per-process, in-memory).
-- `GET /api/session` → `200 { token, chat: { enabled, model, sessionTokensUsed, sessionTokenBudget } }` when chat configured; `200 { token, chat: { enabled: false, reason } }` when serve runs without `config.llm` (viewer shows reason); static hosting has no endpoint → 404 → chat hidden.
+- `GET /api/session` → `200 { token, chat: { enabled: true, model, sessionTokensUsed, sessionTokenBudget } }` when chat configured; `200 { token, chat: { enabled: false, reason: "no-config" | "no-api-key" } }` otherwise (stable reason codes; the viewer maps them to localized text); static hosting has no endpoint → 404 → chat hidden.
 - `POST /api/chat` requires header `X-Onboard-Token: <token>` (custom header ⇒ browser preflights cross-origin ⇒ combined with no-CORS policy, cross-site calls die). Missing/wrong → 401.
 
 ### 10.3 Chat endpoint
@@ -759,7 +759,7 @@ POST /api/chat
    event: usage  data: {"inputTokens":n,"outputTokens":n,"sessionTotal":n}
    event: done   data: {}
    event: error  data: {"code":"...","message":"..."}   // then stream closes
-Errors: 400 invalid body · 401 token · 403 origin/host · 409 chat disabled · 413 body · 429 budget/in-flight · 502 provider failure
+Errors: 400 invalid body · 401 token · 403 origin/host · 409 chat disabled · 413 body · 415 content-type not application/json · 429 budget/in-flight · 502 provider failure before any SSE byte (after the stream starts, errors are in-band `error` events)
 ```
 
 Session token budget: cumulative provider-reported tokens ≤ `chat.maxTokensPerSession` (default 100k); exceeded → 429 `{code:"budget_exceeded"}` and UI shows a "budget spent — restart serve to reset" state.
@@ -784,7 +784,7 @@ interface LlmAdapter {
 
 - `anthropic`: `POST https://api.anthropic.com/v1/messages`, headers `x-api-key`, `anthropic-version: 2023-06-01`, `stream: true`; parse SSE (`content_block_delta` → delta; `message_start`/`message_delta` usage fields).
 - `openai-compat`: `POST {baseUrl}/chat/completions`, header `Authorization: Bearer`, `stream: true`, `stream_options: {include_usage: true}`; parse SSE (`choices[0].delta.content`; final `usage`). Covers OpenAI, Ollama, LM Studio, OpenRouter, vLLM.
-- Key resolution: `ONBOARD_LLM_API_KEY` → provider-specific var (§4.4). Missing key with LLM requested → exit 2 (generate) / `chat.enabled: false, reason: "no API key"` (serve). Keys never logged (log redaction test §14.5), never serialized.
+- Key resolution: `ONBOARD_LLM_API_KEY` → provider-specific var (§4.4). Missing key with LLM requested → exit 2 (generate) / `chat.enabled: false, reason: "no-api-key"` (serve, §10.2). Keys never logged (log redaction test §14.5), never serialized.
 - Timeouts: connect 10 s, idle 60 s; narration retry 1, chat retry 0 (user can re-ask).
 
 ### 10.6 Token accounting (chat)
@@ -956,7 +956,7 @@ Hostile fixture: XSS filename appears fully escaped in emitted HTML (assert lite
 
 ### 14.6 CI pipeline (`.github/workflows/ci.yml`)
 
-PR + main: install (pnpm, frozen lockfile) → lint + typecheck → unit → build viewer → e2e (fixtures, Playwright chromium) → determinism gate → self-host gate → security tests → `pnpm audit --prod` (fail: high). Node 22 + 24 matrix, ubuntu-latest. All gates required for merge.
+PR + main: install (pnpm, frozen lockfile) → lint + typecheck → unit → build viewer → component tests → e2e (fixtures, Playwright chromium) → determinism gate → self-host gate → security tests → `pnpm audit --prod` (fail: high). Matrix policy: lint/typecheck/unit run on Node 22 **and** 24 (the unit leg includes the cheap double-run bundle-hash check, so cross-version determinism is covered); the heavier gates run on Node 22 only. ubuntu-latest. All gates required for merge.
 
 ## 15. v1 Scope Boundaries
 

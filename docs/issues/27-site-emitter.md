@@ -21,8 +21,8 @@ until 28–32 land — emitted HTML must not depend on viewer internals beyond t
 ## Scope
 
 - `src/emit/bundle.ts` — final TourBundle assembly (meta per §5.3: generatedAt rule §5.6-4, configHash, availability, tokenReport, stats) + gate invocation + `tour-bundle.json` write.
-- `src/emit/render.ts` — markdown→HTML for step bodies (markdown-it `{html:false, linkify:false}` + post-filter §11.5: allowlist `p em strong code pre ul ol li a blockquote`; `a` href must match `^#/` else the element is unwrapped to its text; all other attributes dropped).
-- `src/emit/highlight.ts` — Shiki `codeToHtml` per excerpt (themes `github-light`/`github-dark` dual, lang from FileNode lang with plaintext fallback; Shiki loaded once; unknown-lang error → plaintext retry).
+- `src/emit/render.ts` — markdown→HTML for step bodies: markdown-it `{html:false, linkify:false}`, rendered **from the token stream with custom renderer rules** (never regex-rewriting serialized HTML): token types mapping to `p em strong code pre ul ol li a blockquote` render normally; `a` renders as a link only when href matches `^#/tour/` (else its text content only, no element); every other token type renders as escaped text; no attributes beyond the validated href are ever emitted (§11.5).
+- `src/emit/highlight.ts` — Shiki `codeToHtml` per excerpt: `lang` from **`CodeExcerpt.lang`** (the bundle is the emitter's input), translated via an explicit onboard-lang → Shiki-grammar mapping table (unmapped/unknown → escaped plain `<pre><code>` fallback, also used when Shiki load or highlight throws); dual themes exactly `themes: { light: "github-light", dark: "github-dark" }` (verify against the pinned Shiki version's dual-theme API at implementation — KU-6); highlighter created once per run.
 - `src/emit/site.ts` — `index.html` composition (§9.1 item 4: CSP meta exactly as specified; `<script id="onboard-data" type="application/json">` with stableStringify payload; `<html lang>` from locale; title from viewer.title ?? repoName), asset copy, missing-assets failure (exit 1, rebuild hint).
 - Wire into `src/cli/generate.ts` (replacing the final stub) + `run-report.json` write + §12 summary output.
 - Unit + integration tests.
@@ -48,17 +48,22 @@ until 28–32 land — emitted HTML must not depend on viewer internals beyond t
    `--out` respected; output dir created recursively; stale `site/` contents replaced
    atomically (write to temp sibling then rename — determinism of content, not of
    inode timing).
-8. Size warning: summed site payload > 15 MB → warning `emit-site-large` (§9.1).
-9. run-report per §12 (timings from 16 + emit timings, counts, warnings, tokenReport,
-   warn-level findings, capsHit).
+8. Size warning: the UTF-8 byte length of the inline JSON payload (before embedding)
+   > 15 MB → warning `emit-site-large` (§9.1).
+9. run-report per §12 (timings from 16 + emit timings, counts incl. steps, availability,
+   warnings, tokenReport, warn-level findings, capsHit).
 
 ## Acceptance Criteria
 
 - [ ] mini-express-app: `onboard generate` exits 0; both artifacts exist; `tour-bundle.json` parses with `TourBundleSchema`; HTML contains the CSP meta verbatim (§9.1) and the data script with escaped `<`.
 - [ ] Rendered narration for a step with a planted `<img onerror>` in a module name shows `&lt;img` in HTML (integration with hostile fixture; raw `<img` absent outside the data JSON — precise assertion: parse the emitted HTML, query the data element, strip it, then assert no `<img` in the remainder).
 - [ ] Markdown post-filter: external link `[x](https://evil)` renders as text `x` (no anchor); internal `[x](#/tour/architecture/step/2)` renders as anchor.
-- [ ] Hostile fixture without allowlist → exit 4, `.onboard/` has no new files.
-- [ ] Dual-theme highlighting present (emitted excerpt HTML contains both theme CSS variable sets per Shiki dual output).
+- [ ] Gate block leaves outputs untouched: run against a **pre-populated** temp `--out` (snapshot every file hash first) with the un-allowlisted hostile fixture → exit 4, every preexisting file byte-identical, no new files, no temp-sibling directories left.
+- [ ] Output tree: custom `--out` respected with recursive creation; a stale `site/extra.js` from a previous run is gone after re-emit; a preexisting `cache/narration-cache.json` is byte-identical after emit.
+- [ ] `generatedAt` matrix: clean git fixture → field equals HEAD committer date (UTC) and `dirty: false`; dirtied fixture → field absent, `dirty: true`; no-git fixture → field absent.
+- [ ] run-report: `.onboard/run-report.json` parses with `stageTimingsMs` (incl. an `emit` key), `counts`, `availability`, `warnings`, `capsHit`; `--json` stdout equals the report content.
+- [ ] Size warning: constructed oversized payload (test seam or giant synthetic excerpt set) triggers `emit-site-large` in report + stderr.
+- [ ] Dual-theme highlighting present (emitted excerpt HTML contains both theme variable sets per the pinned Shiki dual output), and an unknown-lang excerpt renders as escaped plain `<pre><code>`.
 - [ ] Clean fixture: run generate twice → `tour-bundle.json` and all `site/*` files byte-identical (local pre-check of the 37 gate).
 - [ ] `js-lib` and `plain-docs` also emit successfully (degraded tour sets).
 

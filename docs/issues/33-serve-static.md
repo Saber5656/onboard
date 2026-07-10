@@ -17,9 +17,10 @@ leans on. Chat (34) mounts onto this server; this issue delivers everything exce
 
 ## Scope
 
-- `src/server/index.ts` — `runServe(opts)` replacing the CLI stub (04): resolve bundle/site (generate when missing; `--fresh` regenerates), start server, print URL, handle SIGINT cleanly.
-- `src/server/guards.ts` — request guard chain (§10.1): Host allowlist, `/api/*` Origin check, 403 responses; 404 for anything outside `site/` and `/api/*`.
-- `src/server/session.ts` — token generation (`base64url(crypto.randomBytes(32))`), `GET /api/session` response per §10.2 (chat config presence-aware; `enabled: false` + reason without `config.llm` or key).
+- `src/server/index.ts` — `runServe(opts)` replacing the CLI stub (04): load config via the 03 loader (`<root>/onboard.config.json` discovery — `serve` has no `--config` flag per §4.1), resolve bundle/site (regenerate when **either** `<out>/site/index.html` or `<out>/tour-bundle.json` is absent or unparsable; `--fresh` always regenerates), start server, print URL, handle SIGINT cleanly.
+- `src/server/guards.ts` — request guard chain (§10.1): Host allowlist, `/api/*` Origin check, 403 responses; 404 for anything outside `site/` and `/api/*`. URL handling: `new URL(req.url, base).pathname`, percent-decoded safely (malformed encoding → 404, no throw); query strings ignored for traversal checks.
+- `src/server/session.ts` — token generation (`base64url(crypto.randomBytes(32))`), `GET /api/session` per §10.2 with the exact shapes: enabled → `{ token, chat: { enabled: true, model, sessionTokensUsed, sessionTokenBudget } }` (counters wired by 34; zeros until then); disabled → `{ token, chat: { enabled: false, reason: "no-config" | "no-api-key" } }` (key presence checked via 24's `resolveApiKey`).
+- `src/server/limits.ts` — shared plumbing consumed by 34: `readLimitedJsonBody(req, limitBytes)` (413 on breach) and `StreamLimiter(max = 2)` (429 when full), unit-tested here.
 - Static serving via sirv (`dev: false, etag: true, dotfiles: false`) rooted at the site dir.
 - Integration tests over real HTTP (ephemeral port).
 
@@ -51,10 +52,13 @@ leans on. Chat (34) mounts onto this server; this issue delivers everything exce
 
 ## Acceptance Criteria
 
-- [ ] Integration: GET `/` serves the emitted index.html (200, correct content-type); GET `/api/session` returns token (base64url, ≥ 43 chars) and `chat.enabled: false` with reason `no-config` when unconfigured.
+- [ ] Integration: GET `/` serves the emitted index.html (200, correct content-type); GET `/api/session` returns token (base64url, ≥ 43 chars) with the exact disabled shape (`reason: "no-config"`) when unconfigured, and `"no-api-key"` when `config.llm` exists but no env key resolves.
 - [ ] `Host: evil.example` → 403 `bad-host`; `/api/session` with `Origin: https://evil.example` → 403 `bad-origin`; same requests with correct Host/no Origin → 200.
-- [ ] `GET /%2e%2e/tour-bundle.json` and `GET /../run-report.json` → 404; no bundle bytes ever served (assert body).
+- [ ] Every tested `/api/*` response (200 and 403 alike) carries `Cache-Control: no-store` and **no** `Access-Control-*` headers (explicit assertions).
+- [ ] Traversal: `GET /%2e%2e/tour-bundle.json` (normal client) and a raw-socket request with literal `GET /../run-report.json` (via `node:net` — high-level clients normalize the path) → 404; malformed percent-encoding → 404 without a crash; no bundle bytes ever served (assert body).
+- [ ] `limits.ts` units: body over 64 KB → 413; third concurrent stream slot → 429.
 - [ ] Occupied port → exit 2 `port-in-use`.
+- [ ] Regenerate triggers: site present but bundle deleted → serve regenerates before listening (log-line assert); both present → no regenerate.
 - [ ] Missing `.onboard/` in a fixture copy → serve triggers generate then serves (assert site exists after). `--fresh` regenerates: assert via the generate-started log line (output bytes are identical by design, so file-content comparison cannot prove a rerun).
 - [ ] SIGINT → clean exit 0 (spawned-process test).
 
@@ -65,7 +69,7 @@ manual: `onboard serve` on mini-express-app, open the URL, click through the tou
 
 ## Dependencies
 
-04 (CLI), 27 (site/bundle to serve).
+04 (CLI), 24 (`resolveApiKey` for the session reason), 27 (site/bundle to serve).
 
 ## Non-goals
 

@@ -25,28 +25,34 @@ honest: claims limited to what gates 36/37 actually prove.
 
 ## Detailed Requirements
 
-1. README quickstart must be copy-paste runnable on the released package name — until
-   KU-1 resolves, use a clearly marked placeholder (`npx <package-name>` with a callout)
-   so issue 40 does a mechanical replace.
+1. README quickstart targets the released package name — until KU-1 resolves, use a
+   clearly marked placeholder (`npx <package-name>` with a callout) explicitly excluded
+   from command-transcript validation; the transcript instead runs the local
+   equivalents (`pnpm exec onboard generate` etc.). Issue 40 does the mechanical
+   replace.
 2. Claims discipline: determinism wording = "byte-identical output for the same commit,
    config, and version — enforced in CI"; token wording = "narration/chat consume only
    pre-digested context; every run reports actual tokens vs. a full-dump baseline". No
    superlatives, no unverified competitor comparisons (research §1 caveat).
 3. English as primary; a short 日本語 section at the bottom of README (tagline +
    quickstart) since the tool ships ja narration — keep it ≤ 20 lines.
-4. SECURITY.md includes the §11.6 hardening checklist as a "what serve does/doesn't do"
-   user-facing table (localhost only; no telemetry; keys never in browser).
-5. All internal doc links relative and valid (`docs/DESIGN.md`, `docs/ci.md`, config
-   schema path); a link-check step added to CI **only** as a non-blocking job (avoid
-   flaky external-link failures; internal links checked with a script in the test
-   suite).
+4. SECURITY.md includes the **complete** §11.6 hardening checklist as a "what serve
+   does / doesn't do" user-facing table — every item: 127.0.0.1 bind, Host allowlist,
+   Origin checks on /api/*, per-process session token, no CORS headers, no-store on
+   /api/*, 64 KB body limit, 2-stream limit, no directory listing, dotfiles denied,
+   only `site/` served, no absolute paths in responses, port conflict = exit (no
+   fallback). Plus: no telemetry, keys never reach the browser. The §11.9 privacy
+   statement appears **verbatim in both README and SECURITY.md** (§11.9 requires both).
+5. Internal links checked by `packages/onboard/test/docs/internal-links.test.ts`
+   (runs inside the existing `unit` CI job — no new CI job; external links are not
+   checked in CI to avoid flakes).
 
 ## Acceptance Criteria
 
-- [ ] Every shell command in README/CONTRIBUTING executed successfully during review (evidence: transcript in PR).
-- [ ] README states both claims with their verification paths and contains the KU-1 placeholder callout.
-- [ ] SECURITY.md contains: report channel, versions table, privacy statement (§11.9 verbatim), secret-gate limits paragraph.
-- [ ] Internal-link check test passes; no absolute file paths or user-specific strings anywhere (grep for `/Users/`, `Saber5656` outside repo URL).
+- [ ] Every executable command in README/CONTRIBUTING (placeholder-name commands excluded and marked) executed successfully during review via local equivalents (evidence: transcript in PR).
+- [ ] README states both claims with their verification paths, contains the KU-1 placeholder callout, and carries the §11.9 privacy statement.
+- [ ] SECURITY.md contains: report channel, versions table, privacy statement (§11.9 verbatim), the complete §11.6 table, secret-gate limits paragraph.
+- [ ] `internal-links.test.ts` passes; no absolute file paths or user-specific strings anywhere (grep for `/Users/`, `Saber5656` outside repo URL).
 - [ ] ja README section reviewed by the repo owner (native check — request in PR).
 
 ## Validation
@@ -55,7 +61,8 @@ honest: claims limited to what gates 36/37 actually prove.
 
 ## Dependencies
 
-33 (serve behavior documented), 27 (generate behavior), 37 (verification flows exist).
+27 (generate behavior), 33 (serve behavior), 36 (security claims are test-proven),
+37 (verification flows exist).
 
 ## Non-goals
 
